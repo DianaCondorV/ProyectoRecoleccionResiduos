@@ -1,0 +1,9 @@
+codigo,nombre,tipo_punto,zona,dias_sin_recolectar
+P01,Mercado Jorge Chavez,mercado,Surco Viejo,2
+P02,Mercado N2 Surco,mercado,Surco Centro,3
+P03,Parque de la Amistad,recreativo,Caminos del Inca,1
+P04,Las Gardenias,residencial,Las Gardenias,4
+P05,Jockey Plaza,comercial,Monterrico,1
+P06,Polvos Rosados,comercial,Ovalo Higuereta,2
+P07,Planta Voces por el Clima,centro_acopio,Surco Sur,0
+P08,Base Marzano Petramas,planta_transferencia,Tomas Marsano,0
