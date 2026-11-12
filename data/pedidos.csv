@@ -1,0 +1,7 @@
+codigo,origen,destino,carga_kg,prioridad,estado,unidad_asignada,tipo_residuo
+R01,P01,P08,1800,alta,asignado,U01,domiciliario
+R02,P04,P06,950,alta,pendiente,,reciclable
+R03,P05,P07,1200,media,entregado,U02,reciclable
+R04,P02,P08,2100,alta,asignado,U01,domiciliario
+R05,P06,P08,2500,baja,pendiente,,desmonte
+R06,P03,P07,600,media,entregado,U02,reciclable
