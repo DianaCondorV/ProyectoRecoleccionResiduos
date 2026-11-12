@@ -1,0 +1,13 @@
+origen,destino,distancia_km,tiempo_min,estado
+P01,P02,0.55,3,habilitada
+P01,P08,3.3,13,habilitada
+P02,P07,1.2,6,habilitada
+P02,P08,4.1,16,habilitada
+P03,P04,0.3,2,habilitada
+P03,P05,6.1,11,habilitada
+P03,P06,2.6,10,habilitada
+P04,P06,2.2,8,cerrada
+P04,P08,2.4,6,habilitada
+P05,P07,16.1,37,habilitada
+P06,P08,2.8,11,habilitada
+P07,P08,3.2,13,habilitada
