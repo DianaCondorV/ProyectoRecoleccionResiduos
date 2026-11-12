@@ -1,0 +1,4 @@
+codigo,tipo,capacidad_kg,costo_km,estado,especialidad
+U01,Camion Compactador Grande,5000,4.50,ocupada,domiciliario
+U02,Camion Baranda Reciclaje,3000,3.20,disponible,reciclable
+U03,Camion Volquete Pesado,6000,5.80,disponible,desmonte
