@@ -1,0 +1,10 @@
+{
+    "C_Cpp.default.cppStandard": "c++17",
+    "C_Cpp.default.cStandard": "c17",
+    "C_Cpp.default.intelliSenseMode": "windows-msvc-x64",
+    "C_Cpp.default.compilerPath": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe",
+    "code-runner.runInTerminal": true,
+    "code-runner.executorMap": {
+        "cpp": "cd $dir && C:\\ghcup\\ghc\\9.10.3\\mingw\\bin\\clang++.exe -std=c++17 -static $fileName -o $fileNameWithoutExt.exe && .\\$fileNameWithoutExt.exe"
+    }
+}
