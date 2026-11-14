@@ -1,6 +1,7 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -34,6 +35,7 @@ struct Unidad {
     double capacidad_kg;
     double costo_km;
     std::string estado;
+    std::string especialidad; // domiciliario, reciclable, desmonte
 };
 
 struct Pedido {
@@ -44,6 +46,7 @@ struct Pedido {
     std::string prioridad;
     std::string estado;
     std::string unidad_asignada;
+    std::string tipo_residuo; // domiciliario, reciclable, desmonte
 };
 
 // ============================================================================
@@ -253,7 +256,7 @@ std::vector<Conexion> cargarConexiones() {
 std::vector<Unidad> cargarUnidades() {
     std::vector<Unidad> unidades;
     const std::string ruta = resolverRutaCSV("unidades.csv");
-    asegurarArchivoCSV(ruta, "codigo,tipo,capacidad_kg,costo_km,estado");
+    asegurarArchivoCSV(ruta, "codigo,tipo,capacidad_kg,costo_km,estado,especialidad");
 
     std::ifstream archivo(ruta);
     if (!archivo.is_open()) {
@@ -271,7 +274,6 @@ std::vector<Unidad> cargarUnidades() {
             esCabecera = false;
             continue;
         }
-        // Tolerar columnas extra al final (ej. especialidad)
         std::vector<std::string> campos = dividirCSV(linea);
         if (campos.size() >= 5) {
             try {
@@ -281,6 +283,7 @@ std::vector<Unidad> cargarUnidades() {
                 u.capacidad_kg = std::stod(campos[2]);
                 u.costo_km = std::stod(campos[3]);
                 u.estado = campos[4];
+                u.especialidad = (campos.size() >= 6) ? campos[5] : "";
                 unidades.push_back(u);
             } catch (...) {
                 std::cerr << "[ADVERTENCIA] Fila invalida en unidades.csv: " << linea << "\n";
@@ -293,7 +296,7 @@ std::vector<Unidad> cargarUnidades() {
 std::vector<Pedido> cargarPedidos() {
     std::vector<Pedido> pedidos;
     const std::string ruta = resolverRutaCSV("pedidos.csv");
-    asegurarArchivoCSV(ruta, "codigo,origen,destino,carga_kg,prioridad,estado,unidad_asignada");
+    asegurarArchivoCSV(ruta, "codigo,origen,destino,carga_kg,prioridad,estado,unidad_asignada,tipo_residuo");
 
     std::ifstream archivo(ruta);
     if (!archivo.is_open()) {
@@ -311,7 +314,7 @@ std::vector<Pedido> cargarPedidos() {
             esCabecera = false;
             continue;
         }
-        // Manejar correctamente campos vacios al final y tolerar columnas extra (ej. tipo_residuo)
+        // Manejar correctamente campos vacios al final y leer tipo_residuo si existe
         std::vector<std::string> campos = dividirCSV(linea);
         if (campos.size() >= 7) {
             try {
@@ -323,6 +326,7 @@ std::vector<Pedido> cargarPedidos() {
                 ped.prioridad = campos[4];
                 ped.estado = campos[5];
                 ped.unidad_asignada = campos[6];
+                ped.tipo_residuo = (campos.size() >= 8) ? campos[7] : "";
                 pedidos.push_back(ped);
             } catch (...) {
                 std::cerr << "[ADVERTENCIA] Fila invalida en pedidos.csv: " << linea << "\n";
@@ -386,13 +390,14 @@ void guardarUnidades(const std::vector<Unidad>& unidades) {
         std::cerr << "[ERROR] No se pudo guardar " << ruta << "\n";
         return;
     }
-    archivo << "codigo,tipo,capacidad_kg,costo_km,estado\n";
+    archivo << "codigo,tipo,capacidad_kg,costo_km,estado,especialidad\n";
     for (const Unidad& u : unidades) {
         archivo << u.codigo << ","
                 << u.tipo << ","
                 << u.capacidad_kg << ","
                 << u.costo_km << ","
-                << u.estado << "\n";
+                << u.estado << ","
+                << u.especialidad << "\n";
     }
 }
 
@@ -403,7 +408,7 @@ void guardarPedidos(const std::vector<Pedido>& pedidos) {
         std::cerr << "[ERROR] No se pudo guardar " << ruta << "\n";
         return;
     }
-    archivo << "codigo,origen,destino,carga_kg,prioridad,estado,unidad_asignada\n";
+    archivo << "codigo,origen,destino,carga_kg,prioridad,estado,unidad_asignada,tipo_residuo\n";
     for (const Pedido& ped : pedidos) {
         archivo << ped.codigo << ","
                 << ped.origen << ","
@@ -411,7 +416,8 @@ void guardarPedidos(const std::vector<Pedido>& pedidos) {
                 << ped.carga_kg << ","
                 << ped.prioridad << ","
                 << ped.estado << ","
-                << ped.unidad_asignada << "\n";
+                << ped.unidad_asignada << ","
+                << ped.tipo_residuo << "\n";
     }
 }
 
@@ -423,6 +429,398 @@ void guardarTodo(const std::vector<Punto>& puntos,
     guardarConexiones(conexiones);
     guardarUnidades(unidades);
     guardarPedidos(pedidos);
+}
+
+// ============================================================================
+// Funcionalidad adicional (Juan David Morales Rabelly):
+// Clasificacion por tipo de residuo y asignacion de camiones especializados
+// ============================================================================
+
+bool esCategoriaResiduoValida(const std::string& categoria) {
+    const std::string norm = aMinusculas(recortar(categoria));
+    return norm == "domiciliario" || norm == "reciclable" || norm == "desmonte";
+}
+
+std::string leerTextoNoVacio(const std::string& prompt) {
+    while (true) {
+        std::cout << prompt;
+        std::string linea;
+        if (!std::getline(std::cin, linea)) {
+            return "";
+        }
+        linea = recortar(linea);
+        if (!linea.empty()) {
+            return linea;
+        }
+        std::cout << "El valor no puede estar vacio. Intente nuevamente.\n";
+    }
+}
+
+double leerDoublePositivo(const std::string& prompt) {
+    while (true) {
+        std::cout << prompt;
+        std::string linea;
+        if (!std::getline(std::cin, linea)) {
+            return -1.0;
+        }
+        linea = recortar(linea);
+        try {
+            std::size_t procesados = 0;
+            double valor = std::stod(linea, &procesados);
+            if (procesados == linea.size() && valor > 0.0) {
+                return valor;
+            }
+        } catch (...) {
+        }
+        std::cout << "Ingrese un numero positivo valido.\n";
+    }
+}
+
+std::string leerCategoriaResiduo(const std::string& prompt) {
+    while (true) {
+        std::cout << prompt << "\n"
+                  << "  1. domiciliario\n"
+                  << "  2. reciclable (Programa Bolsa Naranja)\n"
+                  << "  3. desmonte\n"
+                  << "Seleccione (1-3 o nombre): ";
+        std::string entrada;
+        if (!std::getline(std::cin, entrada)) {
+            return "";
+        }
+        const std::string norm = aMinusculas(recortar(entrada));
+        if (norm == "1" || norm == "domiciliario") {
+            return "domiciliario";
+        }
+        if (norm == "2" || norm == "reciclable") {
+            return "reciclable";
+        }
+        if (norm == "3" || norm == "desmonte") {
+            return "desmonte";
+        }
+        std::cout << "Categoria invalida. Use domiciliario, reciclable o desmonte.\n";
+    }
+}
+
+std::string leerPrioridadPedido() {
+    while (true) {
+        std::cout << "Prioridad (alta / media / baja): ";
+        std::string entrada;
+        if (!std::getline(std::cin, entrada)) {
+            return "";
+        }
+        const std::string norm = aMinusculas(recortar(entrada));
+        if (norm == "alta" || norm == "media" || norm == "baja") {
+            return norm;
+        }
+        std::cout << "Prioridad invalida. Ingrese alta, media o baja.\n";
+    }
+}
+
+int buscarIndiceUnidad(const std::vector<Unidad>& unidades, const std::string& codigo) {
+    const std::string buscado = aMinusculas(recortar(codigo));
+    for (std::size_t i = 0; i < unidades.size(); ++i) {
+        if (aMinusculas(recortar(unidades[i].codigo)) == buscado) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+int buscarIndicePedido(const std::vector<Pedido>& pedidos, const std::string& codigo) {
+    const std::string buscado = aMinusculas(recortar(codigo));
+    for (std::size_t i = 0; i < pedidos.size(); ++i) {
+        if (aMinusculas(recortar(pedidos[i].codigo)) == buscado) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+bool validarCompatibilidadResiduo(const Pedido& pedido,
+                                  const Unidad& unidad,
+                                  std::string& motivoRechazo) {
+    const std::string tipoPed = aMinusculas(recortar(pedido.tipo_residuo));
+    const std::string espUni = aMinusculas(recortar(unidad.especialidad));
+
+    if (!esCategoriaResiduoValida(tipoPed) || !esCategoriaResiduoValida(espUni)) {
+        motivoRechazo = "El pedido o la unidad no tiene una categoria de residuo valida registrada.";
+        return false;
+    }
+    if (tipoPed != espUni) {
+        motivoRechazo = "Operacion rechazada: el pedido " + pedido.codigo +
+                        " es de tipo '" + pedido.tipo_residuo +
+                        "' y la unidad " + unidad.codigo +
+                        " tiene especialidad '" + unidad.especialidad + "'.";
+        return false;
+    }
+    if (aMinusculas(recortar(pedido.estado)) != "pendiente") {
+        motivoRechazo = "El pedido " + pedido.codigo + " no esta pendiente (estado: '" +
+                        pedido.estado + "').";
+        return false;
+    }
+    if (aMinusculas(recortar(unidad.estado)) != "disponible") {
+        motivoRechazo = "La unidad " + unidad.codigo + " no esta disponible (estado: '" +
+                        unidad.estado + "').";
+        return false;
+    }
+    if (unidad.capacidad_kg < pedido.carga_kg) {
+        std::ostringstream oss;
+        oss << "Capacidad insuficiente: el pedido " << pedido.codigo
+            << " pesa " << pedido.carga_kg << " kg y " << unidad.codigo
+            << " soporta " << unidad.capacidad_kg << " kg.";
+        motivoRechazo = oss.str();
+        return false;
+    }
+    return true;
+}
+
+void mostrarUnidadesEspecializadas(const std::vector<Unidad>& unidades) {
+    std::cout << "\n-- Camiones recolectores --\n";
+    for (const Unidad& u : unidades) {
+        std::cout << "  " << u.codigo << " | " << u.tipo
+                  << " | esp: " << (u.especialidad.empty() ? "(sin definir)" : u.especialidad)
+                  << " | cap: " << u.capacidad_kg << " kg"
+                  << " | estado: " << u.estado << "\n";
+    }
+}
+
+void mostrarPedidosClasificados(const std::vector<Pedido>& pedidos) {
+    std::cout << "\n-- Solicitudes de recojo --\n";
+    for (const Pedido& p : pedidos) {
+        std::cout << "  " << p.codigo << " (" << p.origen << " -> " << p.destino << ")"
+                  << " | carga: " << p.carga_kg << " kg"
+                  << " | tipo: " << (p.tipo_residuo.empty() ? "(sin definir)" : p.tipo_residuo)
+                  << " | estado: " << p.estado;
+        if (!p.unidad_asignada.empty()) {
+            std::cout << " | unidad: " << p.unidad_asignada;
+        }
+        std::cout << "\n";
+    }
+}
+
+void registrarUnidadEspecializada(std::vector<Unidad>& unidades) {
+    const std::string codigo = leerTextoNoVacio("Codigo de unidad (ej. U04): ");
+    if (codigo.empty()) {
+        return;
+    }
+    if (buscarIndiceUnidad(unidades, codigo) != -1) {
+        std::cout << "[ERROR] Ya existe una unidad con el codigo " << codigo << ".\n";
+        return;
+    }
+
+    Unidad nueva;
+    nueva.codigo = codigo;
+    nueva.tipo = leerTextoNoVacio("Descripcion/tipo de camion (ej. Camion Bolsa Naranja): ");
+    if (nueva.tipo.empty()) {
+        return;
+    }
+    nueva.capacidad_kg = leerDoublePositivo("Capacidad maxima (kg): ");
+    if (nueva.capacidad_kg <= 0.0) {
+        return;
+    }
+    nueva.costo_km = leerDoublePositivo("Costo por kilometro (S/): ");
+    if (nueva.costo_km <= 0.0) {
+        return;
+    }
+    nueva.estado = "disponible";
+    nueva.especialidad = leerCategoriaResiduo("Especialidad de la unidad:");
+    if (nueva.especialidad.empty()) {
+        return;
+    }
+
+    unidades.push_back(nueva);
+    guardarUnidades(unidades);
+    std::cout << "[OK] Unidad " << nueva.codigo << " registrada con especialidad '"
+              << nueva.especialidad << "' y guardada en unidades.csv.\n";
+}
+
+void actualizarEspecialidadUnidad(std::vector<Unidad>& unidades) {
+    if (unidades.empty()) {
+        std::cout << "No hay unidades registradas.\n";
+        return;
+    }
+    mostrarUnidadesEspecializadas(unidades);
+    const std::string codigo = leerTextoNoVacio("Codigo de la unidad a clasificar: ");
+    const int idx = buscarIndiceUnidad(unidades, codigo);
+    if (idx == -1) {
+        std::cout << "[ERROR] No se encontro la unidad " << codigo << ".\n";
+        return;
+    }
+    const std::string nuevaEsp = leerCategoriaResiduo("Nueva especialidad para " + unidades[idx].codigo + ":");
+    if (nuevaEsp.empty()) {
+        return;
+    }
+    unidades[idx].especialidad = nuevaEsp;
+    guardarUnidades(unidades);
+    std::cout << "[OK] Especialidad de " << unidades[idx].codigo
+              << " actualizada a '" << nuevaEsp << "' en unidades.csv.\n";
+}
+
+void registrarPedidoClasificado(std::vector<Pedido>& pedidos) {
+    const std::string codigo = leerTextoNoVacio("Codigo de solicitud (ej. R07): ");
+    if (codigo.empty()) {
+        return;
+    }
+    if (buscarIndicePedido(pedidos, codigo) != -1) {
+        std::cout << "[ERROR] Ya existe un pedido con el codigo " << codigo << ".\n";
+        return;
+    }
+
+    Pedido nuevo;
+    nuevo.codigo = codigo;
+    nuevo.origen = leerTextoNoVacio("Punto de origen (ej. P04): ");
+    if (nuevo.origen.empty()) {
+        return;
+    }
+    nuevo.destino = leerTextoNoVacio("Punto de destino (ej. P07): ");
+    if (nuevo.destino.empty()) {
+        return;
+    }
+    nuevo.carga_kg = leerDoublePositivo("Carga estimada (kg): ");
+    if (nuevo.carga_kg <= 0.0) {
+        return;
+    }
+    nuevo.prioridad = leerPrioridadPedido();
+    if (nuevo.prioridad.empty()) {
+        return;
+    }
+    nuevo.estado = "pendiente";
+    nuevo.unidad_asignada = "";
+    nuevo.tipo_residuo = leerCategoriaResiduo("Tipo de residuo del pedido:");
+    if (nuevo.tipo_residuo.empty()) {
+        return;
+    }
+
+    pedidos.push_back(nuevo);
+    guardarPedidos(pedidos);
+    std::cout << "[OK] Pedido " << nuevo.codigo << " (" << nuevo.tipo_residuo
+              << ") registrado y guardado en pedidos.csv.\n";
+}
+
+void actualizarTipoResiduoPedido(std::vector<Pedido>& pedidos) {
+    if (pedidos.empty()) {
+        std::cout << "No hay pedidos registrados.\n";
+        return;
+    }
+    mostrarPedidosClasificados(pedidos);
+    const std::string codigo = leerTextoNoVacio("Codigo del pedido a clasificar: ");
+    const int idx = buscarIndicePedido(pedidos, codigo);
+    if (idx == -1) {
+        std::cout << "[ERROR] No se encontro el pedido " << codigo << ".\n";
+        return;
+    }
+    const std::string nuevoTipo = leerCategoriaResiduo("Nuevo tipo de residuo para " + pedidos[idx].codigo + ":");
+    if (nuevoTipo.empty()) {
+        return;
+    }
+    pedidos[idx].tipo_residuo = nuevoTipo;
+    guardarPedidos(pedidos);
+    std::cout << "[OK] Tipo de residuo de " << pedidos[idx].codigo
+              << " actualizado a '" << nuevoTipo << "' en pedidos.csv.\n";
+}
+
+void asignarPedidoEspecializado(std::vector<Pedido>& pedidos, std::vector<Unidad>& unidades) {
+    if (pedidos.empty() || unidades.empty()) {
+        std::cout << "Se requieren pedidos y unidades registradas para asignar.\n";
+        return;
+    }
+    mostrarPedidosClasificados(pedidos);
+    mostrarUnidadesEspecializadas(unidades);
+
+    const std::string codPedido = leerTextoNoVacio("\nCodigo del pedido a asignar: ");
+    const int idxPed = buscarIndicePedido(pedidos, codPedido);
+    if (idxPed == -1) {
+        std::cout << "[ERROR] No existe el pedido " << codPedido << ".\n";
+        return;
+    }
+
+    const std::string codUnidad = leerTextoNoVacio("Codigo de la unidad a asignar: ");
+    const int idxUni = buscarIndiceUnidad(unidades, codUnidad);
+    if (idxUni == -1) {
+        std::cout << "[ERROR] No existe la unidad " << codUnidad << ".\n";
+        return;
+    }
+
+    std::string motivoRechazo;
+    if (!validarCompatibilidadResiduo(pedidos[idxPed], unidades[idxUni], motivoRechazo)) {
+        std::cout << "[RECHAZADO] " << motivoRechazo << "\n";
+        return;
+    }
+
+    pedidos[idxPed].estado = "asignado";
+    pedidos[idxPed].unidad_asignada = unidades[idxUni].codigo;
+    unidades[idxUni].estado = "ocupada";
+    guardarPedidos(pedidos);
+    guardarUnidades(unidades);
+
+    std::cout << "[OK] Pedido " << pedidos[idxPed].codigo << " (" << pedidos[idxPed].tipo_residuo
+              << ") asignado a la unidad " << unidades[idxUni].codigo
+              << ". Cambios guardados en CSV.\n";
+}
+
+void mostrarResumenPorCategoria(const std::vector<Pedido>& pedidos) {
+    const std::vector<std::string> categorias = {"domiciliario", "reciclable", "desmonte"};
+    std::cout << "\n=== RESUMEN DE RESIDUOS POR CATEGORIA (SURCO) ===\n";
+    for (const std::string& cat : categorias) {
+        int cantidad = 0;
+        double pesoTotal = 0.0;
+        for (const Pedido& p : pedidos) {
+            if (aMinusculas(recortar(p.tipo_residuo)) == cat) {
+                ++cantidad;
+                pesoTotal += p.carga_kg;
+            }
+        }
+        std::cout << "Categoria " << cat << ": " << pesoTotal << " kg ("
+                  << cantidad << (cantidad == 1 ? " pedido)" : " pedidos)");
+        if (cat == "reciclable") {
+            std::ostringstream bono;
+            bono << std::fixed << std::setprecision(2) << (pesoTotal * 0.50);
+            std::cout << " | Bono valorizacion (S/ 0.50/kg): S/ " << bono.str();
+        }
+        std::cout << "\n";
+    }
+}
+
+void menuClasificacionEspecializada(std::vector<Unidad>& unidades,
+                                    std::vector<Pedido>& pedidos) {
+    int subopcion = -1;
+    do {
+        std::cout << "\n--- CLASIFICACION POR RESIDUO Y ASIGNACION ESPECIALIZADA ---\n";
+        std::cout << "1. Registrar nueva unidad con especialidad\n";
+        std::cout << "2. Actualizar especialidad de una unidad existente\n";
+        std::cout << "3. Registrar nuevo pedido con tipo de residuo\n";
+        std::cout << "4. Actualizar tipo de residuo de un pedido existente\n";
+        std::cout << "5. Asignar pedido a camion (validando especialidad y capacidad)\n";
+        std::cout << "6. Ver resumen por categoria de residuo\n";
+        std::cout << "0. Volver al menu principal\n";
+        subopcion = leerOpcionEntera("Seleccione una opcion: ", 0);
+
+        switch (subopcion) {
+            case 1:
+                registrarUnidadEspecializada(unidades);
+                break;
+            case 2:
+                actualizarEspecialidadUnidad(unidades);
+                break;
+            case 3:
+                registrarPedidoClasificado(pedidos);
+                break;
+            case 4:
+                actualizarTipoResiduoPedido(pedidos);
+                break;
+            case 5:
+                asignarPedidoEspecializado(pedidos, unidades);
+                break;
+            case 6:
+                mostrarResumenPorCategoria(pedidos);
+                break;
+            case 0:
+                break;
+            default:
+                std::cout << "Opcion invalida.\n";
+                break;
+        }
+    } while (subopcion != 0);
 }
 
 // ============================================================================
@@ -497,6 +895,8 @@ void gestionarEstadoVia(std::vector<Conexion>& /*conexiones*/) {
 }
 
 // TODO [4.1.4 - Jason]: Implementar asignacion de solicitud a camion
+// Nota de integracion: utilizar validarCompatibilidadResiduo(pedido, unidad, motivo)
+// para validar tipo_residuo == especialidad, disponibilidad y capacidad.
 void asignarSolicitudACamion(std::vector<Pedido>& /*pedidos*/,
                                std::vector<Unidad>& /*unidades*/) {
     std::cout << "[Stub] Asignar solicitud a camion - Pendiente [4.1.4 - Jason]\n";
@@ -705,9 +1105,10 @@ int main() {
         std::cout << "2. Gestionar estados (Vias y Solicitudes)\n";
         std::cout << "3. Consultas basicas\n";
         std::cout << "4. Reporte general del sistema\n";
-        std::cout << "5. Salir\n";
+        std::cout << "5. Clasificacion por residuo y asignacion especializada\n";
+        std::cout << "6. Salir\n";
 
-        opcion = leerOpcionEntera("Seleccione una opcion: ", 5);
+        opcion = leerOpcionEntera("Seleccione una opcion: ", 6);
 
         switch (opcion) {
             case 1:
@@ -725,13 +1126,17 @@ int main() {
                 mostrarReporteGeneral(puntos, conexiones, unidades, pedidos);
                 break;
             case 5:
+                menuClasificacionEspecializada(unidades, pedidos);
+                guardarTodo(puntos, conexiones, unidades, pedidos);
+                break;
+            case 6:
                 std::cout << "Saliendo del sistema...\n";
                 break;
             default:
                 std::cout << "Opcion invalida. Intente nuevamente.\n";
                 break;
         }
-    } while (opcion != 5);
+    } while (opcion != 6);
 
     return 0;
 }

@@ -1,9 +1,10 @@
 # Sistema de Planificacion de Rutas y Logistica - Recoleccion de Residuos Solidos (Santiago de Surco)
 
-Sistema universitario dividido en dos programas **independientes** que comparten una carpeta comun de archivos CSV (`data/`):
+Sistema universitario dividido en tres programas **independientes** que comparten una carpeta comun de archivos CSV (`data/`):
 
-- **Modulo C++ (`cpp/main.cpp`)**: Gestion imperativa estructurada en consola, carga inicial, persistencia en CSV, reporte general y puntos de extension para el equipo.
-- **Modulo Haskell (`haskell/Main.hs`)**: Analisis funcional puro de grafos de vias, calculo de rutas posibles, costos de traslado y priorizacion de pedidos pendientes.
+- **Modulo C++ (`cpp/main.cpp`)**: Gestion imperativa estructurada en consola, carga inicial, persistencia en CSV, reporte general, clasificacion de residuos y asignacion validada de camiones especializados.
+- **Modulo Haskell (`haskell/Main.hs`)**: Analisis funcional puro de grafos de vias, calculo de rutas posibles, costos de traslado, priorizacion de pedidos y resumen de peso/valorizacion por tipo de residuo (`filter`, `map`, `foldr`).
+- **Modulo Prolog (`prolog/logistica.pl`)**: Base de conocimiento logica de pedidos y unidades con la regla `camion_compatible/2` para consultar compatibilidad por especialidad, disponibilidad y capacidad.
 
 ---
 
@@ -20,10 +21,12 @@ ProyectoRecoleccionResiduos/
 │   └── main.cpp
 ├── haskell/
 │   └── Main.hs
+├── prolog/
+│   └── logistica.pl
 └── README.md
 ```
 
-> **Compatibilidad con `data/`:** Ambos modulos utilizan la funcion `resolverRutaCSV`, que busca primero `data/<archivo>.csv`, luego `../data/<archivo>.csv` y finalmente `./<archivo>.csv`. Ademas, los parsers leen las columnas base y toleran columnas adicionales presentes en los CSV actuales del repositorio (`dias_sin_recolectar`, `especialidad`, `tipo_residuo`).
+> **Compatibilidad con `data/`:** Los tres modulos resuelven automaticamente la ruta hacia `data/` (`data/<archivo>.csv`, `../data/<archivo>.csv`, `./<archivo>.csv`). `unidades.csv` incluye el campo `especialidad` y `pedidos.csv` incluye `tipo_residuo` (`domiciliario`, `reciclable`, `desmonte`).
 
 ---
 
@@ -81,6 +84,18 @@ O compilado:
 cd haskell
 ghc -Wall Main.hs -o Main.exe
 .\Main.exe
+```
+
+#### Modulo Prolog (SWI-Prolog)
+```powershell
+# Sesion interactiva desde la raiz (carga automaticamente data/*.csv)
+swipl prolog\logistica.pl
+
+# Consulta de ejemplo dentro de swipl:
+# ?- camion_compatible(r02, Unidad).
+
+# O demostracion directa desde terminal:
+swipl -q -s prolog\logistica.pl -g demo -t halt
 ```
 
 ---
@@ -147,16 +162,31 @@ cd haskell
 runghc Main.hs
 ```
 
+#### Modulo Prolog (SWI-Prolog)
+```bash
+# Desde la raiz del proyecto
+swipl prolog/logistica.pl
+
+# O desde la subcarpeta prolog/
+cd prolog
+swipl logistica.pl
+```
+
 ---
 
 ## Alcance Implementado y Puntos de Extension
 
 ### Implementacion base (Juan David Morales Rabelly)
-- **C++ `[4.1.1]`**: Menu principal interactivo adaptado a recoleccion de residuos en Surco (invoca `guardarTodo()` al volver de las opciones 1 y 2).
+- **C++ `[4.1.1]`**: Menu principal interactivo adaptado a recoleccion de residuos en Surco (invoca `guardarTodo()` al volver de las opciones 1, 2 y 5).
 - **C++ `[4.1.2]`**: Carga inicial de `puntos.csv`, `conexiones.csv`, `unidades.csv` y `pedidos.csv` (creacion automatica con cabecera si faltan, soporte `\r\n` y campos vacios al final).
 - **C++ `[4.1.5]`**: Persistencia CSV (`guardarPuntos`, `guardarConexiones`, `guardarUnidades`, `guardarPedidos`, `guardarTodo`).
 - **C++ `[4.1.7]`**: Reporte general del sistema en memoria.
 - **Haskell `[4.2.7]`**: Orquestacion `main :: IO ()`, seleccion interactiva con valor por defecto (Enter) de pedido pendiente y unidad disponible, calculo de ruta optima y salida formateada.
+
+### Funcionalidad adicional (Juan David Morales Rabelly)
+- **C++ (Opcion 5 del menu)**: Registro/actualizacion de `especialidad` en unidades y `tipo_residuo` en pedidos (`domiciliario`, `reciclable`, `desmonte`), validacion estricta al asignar camiones (`validarCompatibilidadResiduo`) rechazando asignaciones incompatibles y persistencia automatica en `unidades.csv` y `pedidos.csv`.
+- **Haskell**: Clasificacion con `filter`, calculo de valorizacion reciclable (`S/ 0.50/kg`) con `map` + lambda y sumatoria de peso y ahorro por categoria con `foldr`.
+- **Prolog ([prolog/logistica.pl](prolog/logistica.pl))**: Hechos `pedido/8` y `unidad/6` (con carga automatica desde `data/*.csv`) y regla `camion_compatible/2`.
 
 ### Puntos de integracion del equipo
 - **C++**: Stubs comentados con `// TODO [4.1.3 - Carlos]`, `// TODO [4.1.4 - Jason]` y `// TODO [4.1.6 - Diana]`.

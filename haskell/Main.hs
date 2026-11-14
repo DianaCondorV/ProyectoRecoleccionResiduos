@@ -27,6 +27,7 @@ data Unidad = Unidad
   , capacidadKg  :: Double
   , costoKm      :: Double
   , estadoUnidad :: String
+  , especialidad :: String
   } deriving (Show, Eq)
 
 data Pedido = Pedido
@@ -37,6 +38,7 @@ data Pedido = Pedido
   , prioridad      :: String
   , estadoPedido   :: String
   , unidadAsignada :: String
+  , tipoResiduo    :: String
   } deriving (Show, Eq)
 
 -- ============================================================================
@@ -99,20 +101,25 @@ parsearConexion linea =
 parsearUnidad :: String -> Maybe Unidad
 parsearUnidad linea =
   case dividirCSV linea of
-    -- Tolera columnas adicionales al final (ej. especialidad)
+    (cod : tipo : capStr : costoStr : est : esp : _) -> do
+      cap <- readMaybe capStr
+      costo <- readMaybe costoStr
+      return (Unidad cod tipo cap costo est esp)
     (cod : tipo : capStr : costoStr : est : _) -> do
       cap <- readMaybe capStr
       costo <- readMaybe costoStr
-      return (Unidad cod tipo cap costo est)
+      return (Unidad cod tipo cap costo est "")
     _ -> Nothing
 
 parsearPedido :: String -> Maybe Pedido
 parsearPedido linea =
   case dividirCSV linea of
-    -- Maneja unidad_asignada vacia y tolera columnas adicionales (ej. tipo_residuo)
+    (cod : orig : dest : cargaStr : prio : est : unidad : tipoRes : _) -> do
+      carga <- readMaybe cargaStr
+      return (Pedido cod orig dest carga prio est unidad tipoRes)
     (cod : orig : dest : cargaStr : prio : est : unidad : _) -> do
       carga <- readMaybe cargaStr
-      return (Pedido cod orig dest carga prio est unidad)
+      return (Pedido cod orig dest carga prio est unidad "")
     _ -> Nothing
 
 parsearConexiones :: String -> [Conexion]
@@ -200,6 +207,49 @@ pedidosPendientesOrdenados =
     . filter (\p -> aMinusculas (recortar (estadoPedido p)) == "pendiente")
 
 -- ============================================================================
+-- Funcionalidad adicional (Juan David Morales Rabelly):
+-- Clasificacion por tipo de residuo y valorizacion por reciclaje
+-- ============================================================================
+
+tarifaValorizacionKg :: Double
+tarifaValorizacionKg = 0.50
+
+filtrarPorTipoResiduo :: String -> [Pedido] -> [Pedido]
+filtrarPorTipoResiduo categoria =
+  filter (\p -> aMinusculas (recortar (tipoResiduo p)) == aMinusculas (recortar categoria))
+
+valorizarReciclables :: [Pedido] -> [Double]
+valorizarReciclables pedidos =
+  map (\p -> cargaKg p * tarifaValorizacionKg) (filtrarPorTipoResiduo "reciclable" pedidos)
+
+ahorroTotalReciclaje :: [Pedido] -> Double
+ahorroTotalReciclaje pedidos =
+  foldr (+) 0 (valorizarReciclables pedidos)
+
+pesoTotalCategoria :: String -> [Pedido] -> Double
+pesoTotalCategoria categoria pedidos =
+  foldr (+) 0 (map (\p -> cargaKg p) (filtrarPorTipoResiduo categoria pedidos))
+
+formatearKg :: Double -> String
+formatearKg kg
+  | fromIntegral (round kg :: Int) == kg = show (round kg :: Int)
+  | otherwise = printf "%.2f" kg
+
+formatearResumenCategoria :: String -> [Pedido] -> String
+formatearResumenCategoria categoria pedidos =
+  "Total "
+    ++ categoria
+    ++ ": "
+    ++ formatearKg peso
+    ++ " kg ("
+    ++ show cantidad
+    ++ (if cantidad == 1 then " pedido)" else " pedidos)")
+  where
+    filtrados = filtrarPorTipoResiduo categoria pedidos
+    cantidad = length filtrados
+    peso = pesoTotalCategoria categoria pedidos
+
+-- ============================================================================
 -- [4.2.7 - Juan David Morales Rabelly] Orquestacion main y formateo de salida
 -- ============================================================================
 
@@ -219,7 +269,14 @@ formatearListaPendientes =
 
 formatearListaUnidades :: [Unidad] -> String
 formatearListaUnidades =
-  intercalate ", " . map (\u -> codigoUnidad u ++ " (" ++ tipoUnidad u ++ ")")
+  intercalate ", "
+    . map
+        (\u ->
+           codigoUnidad u
+             ++ " ("
+             ++ tipoUnidad u
+             ++ (if null (especialidad u) then "" else " - " ++ especialidad u)
+             ++ ")")
 
 leerEntrada :: IO String
 leerEntrada = do
@@ -330,3 +387,12 @@ main = do
                   ++ printf "%.2f" costoTotal
 
           putStrLn $ "Pedidos pendientes por prioridad: " ++ formatearListaPendientes pendientes
+
+          putStrLn ""
+          putStrLn "=== RESUMEN POR TIPO DE RESIDUO (SURCO) ==="
+          mapM_ (putStrLn . flip formatearResumenCategoria pedidos) ["domiciliario", "reciclable", "desmonte"]
+          putStrLn $
+            "Ahorro por reciclaje (S/ "
+              ++ printf "%.2f" tarifaValorizacionKg
+              ++ "/kg): S/ "
+              ++ printf "%.2f" (ahorroTotalReciclaje pedidos)
