@@ -1,0 +1,4 @@
+unidad,capacidad_tanque_l,combustible_actual_l,consumo_l_km
+U01,180,110,0.45
+U02,150,50,0.5
+U03,200,140,0.6

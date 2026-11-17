@@ -1,0 +1,4 @@
+codigo_servicio,unidad,fecha,kilometraje,descripcion
+S01,U01,2026-09-15,10000,Cambio de aceite y revision de frenos
+S02,U02,2026-10-02,40000,Mantenimiento preventivo general
+S03,U03,2026-10-18,60000,Revision sistema hidraulico y filtros
