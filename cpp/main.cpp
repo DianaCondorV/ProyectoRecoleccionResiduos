@@ -1,1142 +1,2692 @@
-#include <cctype>
-#include <filesystem>
-#include <fstream>
-#include <iomanip>
 #include <iostream>
+#include <fstream>
 #include <sstream>
 #include <string>
-#include <utility>
 #include <vector>
+#include <algorithm>
+#include <iomanip>
+#include <map>
+#include <set>
+#include <cctype>
+#include <utility>
+#include <cstdlib>
 
-namespace fs = std::filesystem;
+using namespace std;
 
 // ============================================================================
-// [4.1.2] Estructuras de datos base del sistema (Santiago de Surco)
+// 1. Estructuras (Recoleccion de Residuos - Surco)
 // ============================================================================
 
 struct Punto {
-    std::string codigo;
-    std::string nombre;
-    std::string tipo_punto;
-    std::string zona;
+    string codigo;
+    string nombre;
+    string tipo_punto;
+    string zona;
+    int dias_sin_recolectar = 0; // FA - Autor: Diana
 };
 
 struct Conexion {
-    std::string origen;
-    std::string destino;
-    double distancia_km;
-    int tiempo_min;
-    std::string estado;
+    string origen;
+    string destino;
+    double distancia_km = 0.0;
+    int tiempo_min = 0;
+    string estado;
 };
 
 struct Unidad {
-    std::string codigo;
-    std::string tipo;
-    double capacidad_kg;
-    double costo_km;
-    std::string estado;
-    std::string especialidad; // domiciliario, reciclable, desmonte
+    string codigo;
+    string tipo;
+    double capacidad_kg = 0.0;
+    double costo_km = 0.0;
+    string estado;
+    string especialidad; // FA - Autor: Juan
 };
 
 struct Pedido {
-    std::string codigo;
-    std::string origen;
-    std::string destino;
-    double carga_kg;
-    std::string prioridad;
-    std::string estado;
-    std::string unidad_asignada;
-    std::string tipo_residuo; // domiciliario, reciclable, desmonte
+    string codigo;
+    string origen;
+    string destino;
+    double carga_kg = 0.0;
+    string prioridad;
+    string estado;
+    string unidad_asignada;
+    string tipo_residuo; // FA - Autor: Juan
 };
 
+// FA - Autor: Carlos
+struct Combustible {
+    string unidad;
+    double capacidad_tanque_l = 0.0;
+    double combustible_actual_l = 0.0;
+    double consumo_l_km = 0.0;
+};
+
+// FA - Autor: Jason
+struct Mantenimiento {
+    string unidad;
+    double km_actual = 0.0;
+    double km_ultimo_mantenimiento = 0.0;
+    double intervalo_km = 0.0;
+};
+
+// FA - Autor: Jason
+struct HistorialMantenimiento {
+    string codigo_servicio;
+    string unidad;
+    string fecha;
+    double kilometraje = 0.0;
+    string descripcion;
+};
+
+// Control de columnas adicionales en los archivos CSV
+struct EsquemaCSV {
+    bool puntosTieneDias = false;
+    bool unidadesTieneEspecialidad = false;
+    bool pedidosTieneTipoResiduo = false;
+};
+
+
 // ============================================================================
-// Funciones auxiliares de texto, CSV y resolucion de rutas
+// 2. UTILIDADES GENERALES
 // ============================================================================
 
-std::string recortar(const std::string& texto) {
-    std::size_t inicio = 0;
+// Elimina espacios al inicio y al final de un texto.
+string limpiarTexto(const string& texto) {
+    size_t inicio = 0;
+
     while (inicio < texto.size() &&
-           (texto[inicio] == ' ' || texto[inicio] == '\t' ||
-            texto[inicio] == '\r' || texto[inicio] == '\n')) {
+           isspace(static_cast<unsigned char>(texto[inicio]))) {
         ++inicio;
     }
-    std::size_t fin = texto.size();
+
+    size_t fin = texto.size();
+
     while (fin > inicio &&
-           (texto[fin - 1] == ' ' || texto[fin - 1] == '\t' ||
-            texto[fin - 1] == '\r' || texto[fin - 1] == '\n')) {
+           isspace(static_cast<unsigned char>(texto[fin - 1]))) {
         --fin;
     }
+
     return texto.substr(inicio, fin - inicio);
 }
 
-std::string aMinusculas(std::string texto) {
-    for (char& ch : texto) {
-        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-    }
-    return texto;
-}
-
-std::vector<std::string> dividirCSV(std::string linea) {
-    if (!linea.empty() && linea.back() == '\r') {
-        linea.pop_back();
-    }
-    // Eliminar posible BOM UTF-8 al inicio del archivo
+// Elimina el BOM de archivos CSV guardados con UTF-8.
+void quitarBOM(string& linea) {
     if (linea.size() >= 3 &&
         static_cast<unsigned char>(linea[0]) == 0xEF &&
         static_cast<unsigned char>(linea[1]) == 0xBB &&
         static_cast<unsigned char>(linea[2]) == 0xBF) {
+
         linea.erase(0, 3);
     }
+}
 
-    std::vector<std::string> campos;
-    std::size_t inicio = 0;
-    while (true) {
-        std::size_t pos = linea.find(',', inicio);
-        if (pos == std::string::npos) {
-            campos.push_back(recortar(linea.substr(inicio)));
-            break;
+// Separa los campos de una línea CSV respetando las comillas.
+vector<string> dividirCSV(const string& linea) {
+    vector<string> campos;
+    string actual;
+    bool entreComillas = false;
+
+    for (size_t i = 0; i < linea.size(); ++i) {
+        char c = linea[i];
+
+        if (c == '"') {
+            // Dos comillas consecutivas dentro de un campo representan
+            // una comilla literal.
+            if (entreComillas && i + 1 < linea.size() &&
+                linea[i + 1] == '"') {
+
+                actual += '"';
+                ++i;
+            } else {
+                entreComillas = !entreComillas;
+            }
         }
-        campos.push_back(recortar(linea.substr(inicio, pos - inicio)));
-        inicio = pos + 1;
+        else if (c == ',' && !entreComillas) {
+            campos.push_back(limpiarTexto(actual));
+            actual.clear();
+        }
+        else if (c != '\r') {
+            actual += c;
+        }
     }
+
+    campos.push_back(limpiarTexto(actual));
+
     return campos;
 }
 
-std::string normalizarNombreCSV(const std::string& nombreArchivo) {
-    if (nombreArchivo.size() >= 4 &&
-        aMinusculas(nombreArchivo.substr(nombreArchivo.size() - 4)) == ".csv") {
-        return nombreArchivo;
+// Convierte texto a double y comprueba que todo el contenido sea válido.
+bool parsearDouble(const string& texto, double& resultado) {
+    string valorTexto = limpiarTexto(texto);
+
+    if (valorTexto.empty()) {
+        return false;
     }
-    return nombreArchivo + ".csv";
+
+    try {
+        size_t procesados = 0;
+        double valor = stod(valorTexto, &procesados);
+
+        if (procesados != valorTexto.size()) {
+            return false;
+        }
+
+        resultado = valor;
+        return true;
+    }
+    catch (...) {
+        return false;
+    }
 }
 
-// Busca primero en data/<archivo>.csv, luego ../data/<archivo>.csv y ./<archivo>.csv.
-// Si ninguno existe todavia, determina la carpeta data/ adecuada para crearlo.
-std::string resolverRutaCSV(const std::string& nombreArchivo) {
-    const std::string archivo = normalizarNombreCSV(nombreArchivo);
-    const std::vector<std::string> candidatos = {
-        "data/" + archivo,
-        "../data/" + archivo,
-        "./" + archivo
+// Convierte texto a entero y comprueba que todo el contenido sea válido.
+bool parsearInt(const string& texto, int& resultado) {
+    string valorTexto = limpiarTexto(texto);
+
+    if (valorTexto.empty()) {
+        return false;
+    }
+
+    try {
+        size_t procesados = 0;
+        int valor = stoi(valorTexto, &procesados);
+
+        if (procesados != valorTexto.size()) {
+            return false;
+        }
+
+        resultado = valor;
+        return true;
+    }
+    catch (...) {
+        return false;
+    }
+}
+
+// Comprueba si un archivo existe y puede abrirse para lectura.
+bool archivoExiste(const string& ruta) {
+    ifstream archivo(ruta);
+    return archivo.good();
+}
+
+// Detecta el directorio donde se encuentran los archivos CSV.
+string detectarDirectorioDatos() {
+    const vector<string> prefijos = {
+        "data/",
+        "../../data/",
+        "../data/",
+        ""
     };
 
-    for (const std::string& ruta : candidatos) {
-        if (fs::exists(ruta) && fs::is_regular_file(ruta)) {
-            return ruta;
+    const vector<string> archivos = {
+        "puntos.csv",
+        "conexiones.csv",
+        "unidades.csv",
+        "pedidos.csv"
+    };
+
+    for (const string& prefijo : prefijos) {
+        for (const string& nombre : archivos) {
+            if (archivoExiste(prefijo + nombre)) {
+                return prefijo;
+            }
         }
     }
 
-    if (fs::exists("data") && fs::is_directory("data")) {
-        return "data/" + archivo;
-    }
-    if (fs::exists("../data") && fs::is_directory("../data")) {
-        return "../data/" + archivo;
-    }
-
-    fs::create_directories("data");
-    return "data/" + archivo;
+    // Si no encuentra archivos, devuelve la ruta data/
+    // para que el sistema pueda crear allí los CSV.
+    return "data/";
 }
 
-void asegurarArchivoCSV(const std::string& ruta, const std::string& cabecera) {
-    if (fs::exists(ruta)) {
+// Lee un entero desde consola y valida su formato.
+bool leerEnteroSeguro(const string& mensaje, int& valor) {
+    cout << mensaje;
+
+    string linea;
+
+    if (!getline(cin, linea)) {
+        return false;
+    }
+
+    return parsearInt(limpiarTexto(linea), valor);
+}
+
+
+// ============================================================================
+// 3. Carga y guardado de archivos CSV
+// ============================================================================
+
+// Convierte un texto en un campo CSV, protegiendo comas y comillas.
+string escaparCampoCSV(const string& texto) {
+    // Solo se usan comillas si el texto contiene coma, comilla o salto de
+    // linea. Asi los CSV quedan simples de leer desde Haskell y Prolog.
+    if (texto.find_first_of(",\"\n\r") == string::npos) {
+        return texto;
+    }
+
+    string resultado = "\"";
+
+    for (char c : texto) {
+        if (c == '"') {
+            resultado += "\"\"";
+        } else {
+            resultado += c;
+        }
+    }
+
+    return resultado + "\"";
+}
+
+// Crea el archivo CSV con su cabecera si no existe o está vacío.
+void asegurarCSV(const string& ruta, const string& cabecera) {
+    ifstream entrada(ruta);
+
+    if (entrada.good() && entrada.peek() != ifstream::traits_type::eof()) {
         return;
     }
-    fs::path p(ruta);
-    if (p.has_parent_path()) {
-        fs::create_directories(p.parent_path());
-    }
-    std::ofstream salida(ruta);
+
+    ofstream salida(ruta, ios::app);
+
     if (salida.is_open()) {
         salida << cabecera << "\n";
     } else {
-        std::cerr << "[ERROR] No se pudo crear el archivo inicial: " << ruta << "\n";
+        cerr << "[ERROR] No se pudo crear " << ruta << "\n";
     }
 }
 
-int leerOpcionEntera(const std::string& prompt, int defecto = -1) {
-    std::cout << prompt;
-    std::string linea;
-    if (!std::getline(std::cin, linea)) {
-        return defecto;
-    }
-    linea = recortar(linea);
-    if (linea.empty()) {
-        return -1;
-    }
-    try {
-        std::size_t procesados = 0;
-        int valor = std::stoi(linea, &procesados);
-        if (procesados != linea.size()) {
-            return -1;
-        }
-        return valor;
-    } catch (...) {
-        return -1;
-    }
+// Comprueba si una cabecera contiene una columna determinada.
+bool tieneColumna(const vector<string>& cabecera, const string& nombre) {
+    return find(cabecera.begin(), cabecera.end(), nombre) != cabecera.end();
 }
 
-// ============================================================================
-// [4.1.2] Carga inicial desde data/*.csv
-// ============================================================================
+// ---------------------------------------------------------------------------
+// [4.1.2] CARGA DE LOS SIETE ARCHIVOS - Autor: Juan
+// ---------------------------------------------------------------------------
 
-std::vector<Punto> cargarPuntos() {
-    std::vector<Punto> puntos;
-    const std::string ruta = resolverRutaCSV("puntos.csv");
-    asegurarArchivoCSV(ruta, "codigo,nombre,tipo_punto,zona");
+void cargarTodo(
+    vector<Punto>& puntos,
+    vector<Conexion>& conexiones,
+    vector<Unidad>& unidades,
+    vector<Pedido>& pedidos,
+    vector<Combustible>& combustibles,
+    vector<Mantenimiento>& mantenimientos,
+    vector<HistorialMantenimiento>& historial,
+    EsquemaCSV& esquema
+) {
+    string directorio = detectarDirectorioDatos();
+    string linea;
 
-    std::ifstream archivo(ruta);
-    if (!archivo.is_open()) {
-        std::cerr << "[ERROR] No se pudo abrir " << ruta << "\n";
-        return puntos;
-    }
+    puntos.clear();
+    conexiones.clear();
+    unidades.clear();
+    pedidos.clear();
+    combustibles.clear();
+    mantenimientos.clear();
+    historial.clear();
 
-    std::string linea;
-    bool esCabecera = true;
-    while (std::getline(archivo, linea)) {
-        if (recortar(linea).empty()) {
-            continue;
-        }
-        if (esCabecera) {
-            esCabecera = false;
-            continue;
-        }
-        // Tolerar columnas extra al final (ej. dias_sin_recolectar)
-        std::vector<std::string> campos = dividirCSV(linea);
-        if (campos.size() >= 4) {
-            Punto p;
-            p.codigo = campos[0];
-            p.nombre = campos[1];
-            p.tipo_punto = campos[2];
-            p.zona = campos[3];
-            puntos.push_back(p);
-        }
-    }
-    return puntos;
-}
+    esquema.puntosTieneDias = false;
+    esquema.unidadesTieneEspecialidad = false;
+    esquema.pedidosTieneTipoResiduo = false;
 
-std::vector<Conexion> cargarConexiones() {
-    std::vector<Conexion> conexiones;
-    const std::string ruta = resolverRutaCSV("conexiones.csv");
-    asegurarArchivoCSV(ruta, "origen,destino,distancia_km,tiempo_min,estado");
+    // PUNTOS
+    {
+        string ruta = directorio + "puntos.csv";
+        asegurarCSV(ruta,
+            "codigo,nombre,tipo_punto,zona,dias_sin_recolectar");
 
-    std::ifstream archivo(ruta);
-    if (!archivo.is_open()) {
-        std::cerr << "[ERROR] No se pudo abrir " << ruta << "\n";
-        return conexiones;
-    }
+        ifstream archivo(ruta);
 
-    std::string linea;
-    bool esCabecera = true;
-    while (std::getline(archivo, linea)) {
-        if (recortar(linea).empty()) {
-            continue;
-        }
-        if (esCabecera) {
-            esCabecera = false;
-            continue;
-        }
-        std::vector<std::string> campos = dividirCSV(linea);
-        if (campos.size() >= 5) {
-            try {
-                Conexion c;
-                c.origen = campos[0];
-                c.destino = campos[1];
-                c.distancia_km = std::stod(campos[2]);
-                c.tiempo_min = std::stoi(campos[3]);
-                c.estado = campos[4];
-                conexiones.push_back(c);
-            } catch (...) {
-                std::cerr << "[ADVERTENCIA] Fila invalida en conexiones.csv: " << linea << "\n";
+        if (getline(archivo, linea)) {
+            quitarBOM(linea);
+            vector<string> cabecera = dividirCSV(linea);
+
+            esquema.puntosTieneDias =
+                tieneColumna(cabecera, "dias_sin_recolectar");
+
+            while (getline(archivo, linea)) {
+                if (limpiarTexto(linea).empty()) continue;
+
+                vector<string> c = dividirCSV(linea);
+                if (c.size() < 4) continue;
+
+                Punto p;
+                p.codigo = c[0];
+                p.nombre = c[1];
+                p.tipo_punto = c[2];
+                p.zona = c[3];
+
+                if (c.size() >= 5) {
+                    int dias;
+                    if (parsearInt(c[4], dias) && dias >= 0) {
+                        p.dias_sin_recolectar = dias;
+                    }
+                }
+
+                puntos.push_back(p);
             }
         }
     }
-    return conexiones;
-}
 
-std::vector<Unidad> cargarUnidades() {
-    std::vector<Unidad> unidades;
-    const std::string ruta = resolverRutaCSV("unidades.csv");
-    asegurarArchivoCSV(ruta, "codigo,tipo,capacidad_kg,costo_km,estado,especialidad");
+    // CONEXIONES
+    {
+        string ruta = directorio + "conexiones.csv";
+        asegurarCSV(ruta,
+            "origen,destino,distancia_km,tiempo_min,estado");
 
-    std::ifstream archivo(ruta);
-    if (!archivo.is_open()) {
-        std::cerr << "[ERROR] No se pudo abrir " << ruta << "\n";
-        return unidades;
+        ifstream archivo(ruta);
+
+        if (getline(archivo, linea)) {
+            quitarBOM(linea);
+
+            while (getline(archivo, linea)) {
+                if (limpiarTexto(linea).empty()) continue;
+
+                vector<string> c = dividirCSV(linea);
+                if (c.size() < 5) continue;
+
+                Conexion conexion;
+
+                if (!parsearDouble(c[2], conexion.distancia_km) ||
+                    !parsearInt(c[3], conexion.tiempo_min) ||
+                    conexion.distancia_km <= 0 ||
+                    conexion.tiempo_min <= 0) {
+                    cerr << "[ADVERTENCIA] Conexion invalida: "
+                         << linea << "\n";
+                    continue;
+                }
+
+                conexion.origen = c[0];
+                conexion.destino = c[1];
+                conexion.estado = c[4];
+
+                conexiones.push_back(conexion);
+            }
+        }
     }
 
-    std::string linea;
-    bool esCabecera = true;
-    while (std::getline(archivo, linea)) {
-        if (recortar(linea).empty()) {
-            continue;
-        }
-        if (esCabecera) {
-            esCabecera = false;
-            continue;
-        }
-        std::vector<std::string> campos = dividirCSV(linea);
-        if (campos.size() >= 5) {
-            try {
+    // UNIDADES
+    {
+        string ruta = directorio + "unidades.csv";
+        asegurarCSV(ruta,
+            "codigo,tipo,capacidad_kg,costo_km,estado,especialidad");
+
+        ifstream archivo(ruta);
+
+        if (getline(archivo, linea)) {
+            quitarBOM(linea);
+            vector<string> cabecera = dividirCSV(linea);
+
+            esquema.unidadesTieneEspecialidad =
+                tieneColumna(cabecera, "especialidad");
+
+            while (getline(archivo, linea)) {
+                if (limpiarTexto(linea).empty()) continue;
+
+                vector<string> c = dividirCSV(linea);
+                if (c.size() < 5) continue;
+
                 Unidad u;
-                u.codigo = campos[0];
-                u.tipo = campos[1];
-                u.capacidad_kg = std::stod(campos[2]);
-                u.costo_km = std::stod(campos[3]);
-                u.estado = campos[4];
-                u.especialidad = (campos.size() >= 6) ? campos[5] : "";
+
+                if (!parsearDouble(c[2], u.capacidad_kg) ||
+                    !parsearDouble(c[3], u.costo_km) ||
+                    u.capacidad_kg <= 0 ||
+                    u.costo_km <= 0) {
+                    cerr << "[ADVERTENCIA] Unidad invalida: "
+                         << linea << "\n";
+                    continue;
+                }
+
+                u.codigo = c[0];
+                u.tipo = c[1];
+                u.estado = c[4];
+                u.especialidad = c.size() >= 6 ? c[5] : "";
+
                 unidades.push_back(u);
-            } catch (...) {
-                std::cerr << "[ADVERTENCIA] Fila invalida en unidades.csv: " << linea << "\n";
             }
         }
     }
-    return unidades;
-}
 
-std::vector<Pedido> cargarPedidos() {
-    std::vector<Pedido> pedidos;
-    const std::string ruta = resolverRutaCSV("pedidos.csv");
-    asegurarArchivoCSV(ruta, "codigo,origen,destino,carga_kg,prioridad,estado,unidad_asignada,tipo_residuo");
+    // PEDIDOS
+    {
+        string ruta = directorio + "pedidos.csv";
+        asegurarCSV(ruta,
+            "codigo,origen,destino,carga_kg,prioridad,estado,"
+            "unidad_asignada,tipo_residuo");
 
-    std::ifstream archivo(ruta);
-    if (!archivo.is_open()) {
-        std::cerr << "[ERROR] No se pudo abrir " << ruta << "\n";
-        return pedidos;
-    }
+        ifstream archivo(ruta);
 
-    std::string linea;
-    bool esCabecera = true;
-    while (std::getline(archivo, linea)) {
-        if (recortar(linea).empty()) {
-            continue;
-        }
-        if (esCabecera) {
-            esCabecera = false;
-            continue;
-        }
-        // Manejar correctamente campos vacios al final y leer tipo_residuo si existe
-        std::vector<std::string> campos = dividirCSV(linea);
-        if (campos.size() >= 7) {
-            try {
-                Pedido ped;
-                ped.codigo = campos[0];
-                ped.origen = campos[1];
-                ped.destino = campos[2];
-                ped.carga_kg = std::stod(campos[3]);
-                ped.prioridad = campos[4];
-                ped.estado = campos[5];
-                ped.unidad_asignada = campos[6];
-                ped.tipo_residuo = (campos.size() >= 8) ? campos[7] : "";
-                pedidos.push_back(ped);
-            } catch (...) {
-                std::cerr << "[ADVERTENCIA] Fila invalida en pedidos.csv: " << linea << "\n";
+        if (getline(archivo, linea)) {
+            quitarBOM(linea);
+            vector<string> cabecera = dividirCSV(linea);
+
+            esquema.pedidosTieneTipoResiduo =
+                tieneColumna(cabecera, "tipo_residuo");
+
+            while (getline(archivo, linea)) {
+                if (limpiarTexto(linea).empty()) continue;
+
+                vector<string> c = dividirCSV(linea);
+                if (c.size() < 7) continue;
+
+                Pedido p;
+
+                if (!parsearDouble(c[3], p.carga_kg) ||
+                    p.carga_kg <= 0) {
+                    cerr << "[ADVERTENCIA] Pedido invalido: "
+                         << linea << "\n";
+                    continue;
+                }
+
+                p.codigo = c[0];
+                p.origen = c[1];
+                p.destino = c[2];
+                p.prioridad = c[4];
+                p.estado = c[5];
+                p.unidad_asignada = c[6];
+                p.tipo_residuo = c.size() >= 8 ? c[7] : "";
+
+                pedidos.push_back(p);
             }
         }
     }
-    return pedidos;
+
+    // COMBUSTIBLE
+    {
+        string ruta = directorio + "combustible.csv";
+        asegurarCSV(ruta,
+            "unidad,capacidad_tanque_l,combustible_actual_l,consumo_l_km");
+
+        ifstream archivo(ruta);
+
+        if (getline(archivo, linea)) {
+            quitarBOM(linea);
+
+            while (getline(archivo, linea)) {
+                if (limpiarTexto(linea).empty()) continue;
+
+                vector<string> c = dividirCSV(linea);
+                if (c.size() < 4) continue;
+
+                Combustible combustible;
+
+                if (!parsearDouble(c[1], combustible.capacidad_tanque_l) ||
+                    !parsearDouble(c[2], combustible.combustible_actual_l) ||
+                    !parsearDouble(c[3], combustible.consumo_l_km) ||
+                    combustible.capacidad_tanque_l <= 0 ||
+                    combustible.combustible_actual_l < 0 ||
+                    combustible.combustible_actual_l >
+                        combustible.capacidad_tanque_l ||
+                    combustible.consumo_l_km <= 0) {
+                    cerr << "[ADVERTENCIA] Combustible invalido: "
+                         << linea << "\n";
+                    continue;
+                }
+
+                combustible.unidad = c[0];
+                combustibles.push_back(combustible);
+            }
+        }
+    }
+
+    // MANTENIMIENTO
+    {
+        string ruta = directorio + "mantenimiento.csv";
+        asegurarCSV(ruta,
+            "unidad,km_actual,km_ultimo_mantenimiento,intervalo_km");
+
+        ifstream archivo(ruta);
+
+        if (getline(archivo, linea)) {
+            quitarBOM(linea);
+
+            while (getline(archivo, linea)) {
+                if (limpiarTexto(linea).empty()) continue;
+
+                vector<string> c = dividirCSV(linea);
+                if (c.size() < 4) continue;
+
+                Mantenimiento m;
+
+                if (!parsearDouble(c[1], m.km_actual) ||
+                    !parsearDouble(c[2], m.km_ultimo_mantenimiento) ||
+                    !parsearDouble(c[3], m.intervalo_km) ||
+                    m.km_actual < 0 ||
+                    m.km_ultimo_mantenimiento < 0 ||
+                    m.km_ultimo_mantenimiento > m.km_actual ||
+                    m.intervalo_km <= 0) {
+                    cerr << "[ADVERTENCIA] Mantenimiento invalido: "
+                         << linea << "\n";
+                    continue;
+                }
+
+                m.unidad = c[0];
+                mantenimientos.push_back(m);
+            }
+        }
+    }
+
+    // HISTORIAL DE MANTENIMIENTO
+    {
+        string ruta = directorio + "historial_mantenimiento.csv";
+        asegurarCSV(ruta,
+            "codigo_servicio,unidad,fecha,kilometraje,descripcion");
+
+        ifstream archivo(ruta);
+
+        if (getline(archivo, linea)) {
+            quitarBOM(linea);
+
+            while (getline(archivo, linea)) {
+                if (limpiarTexto(linea).empty()) continue;
+
+                vector<string> c = dividirCSV(linea);
+                if (c.size() < 5) continue;
+
+                HistorialMantenimiento h;
+
+                if (!parsearDouble(c[3], h.kilometraje) ||
+                    h.kilometraje < 0) {
+                    cerr << "[ADVERTENCIA] Historial invalido: "
+                         << linea << "\n";
+                    continue;
+                }
+
+                h.codigo_servicio = c[0];
+                h.unidad = c[1];
+                h.fecha = c[2];
+                h.descripcion = c[4];
+
+                historial.push_back(h);
+            }
+        }
+    }
+
+    cout << "\n[OK] Carga inicial completada.\n";
+    cout << "Puntos: " << puntos.size() << "\n";
+    cout << "Conexiones: " << conexiones.size() << "\n";
+    cout << "Unidades: " << unidades.size() << "\n";
+    cout << "Pedidos: " << pedidos.size() << "\n";
+    cout << "Combustible: " << combustibles.size() << "\n";
+    cout << "Mantenimientos: " << mantenimientos.size() << "\n";
+    cout << "Historial: " << historial.size() << "\n";
 }
 
-void cargaInicial(std::vector<Punto>& puntos,
-                  std::vector<Conexion>& conexiones,
-                  std::vector<Unidad>& unidades,
-                  std::vector<Pedido>& pedidos) {
-    puntos = cargarPuntos();
-    conexiones = cargarConexiones();
-    unidades = cargarUnidades();
-    pedidos = cargarPedidos();
+// ---------------------------------------------------------------------------
+// [4.1.5] GUARDADO DE LOS SIETE ARCHIVOS - Autor: Juan
+// ---------------------------------------------------------------------------
+
+void guardarTodo(
+    const vector<Punto>& puntos,
+    const vector<Conexion>& conexiones,
+    const vector<Unidad>& unidades,
+    const vector<Pedido>& pedidos,
+    const vector<Combustible>& combustibles,
+    const vector<Mantenimiento>& mantenimientos,
+    const vector<HistorialMantenimiento>& historial
+) {
+    string directorio = detectarDirectorioDatos();
+
+    // PUNTOS
+    {
+        ofstream archivo(directorio + "puntos.csv");
+
+        if (archivo.is_open()) {
+            archivo << "codigo,nombre,tipo_punto,zona,dias_sin_recolectar\n";
+
+            for (const Punto& p : puntos) {
+                archivo << escaparCampoCSV(p.codigo) << ","
+                        << escaparCampoCSV(p.nombre) << ","
+                        << escaparCampoCSV(p.tipo_punto) << ","
+                        << escaparCampoCSV(p.zona) << ","
+                        << p.dias_sin_recolectar << "\n";
+            }
+        } else {
+            cerr << "[ERROR] No se pudo guardar puntos.csv\n";
+        }
+    }
+
+    // CONEXIONES
+    {
+        ofstream archivo(directorio + "conexiones.csv");
+
+        if (archivo.is_open()) {
+            archivo << "origen,destino,distancia_km,tiempo_min,estado\n";
+            archivo << setprecision(10);
+
+            for (const Conexion& c : conexiones) {
+                archivo << escaparCampoCSV(c.origen) << ","
+                        << escaparCampoCSV(c.destino) << ","
+                        << c.distancia_km << ","
+                        << c.tiempo_min << ","
+                        << escaparCampoCSV(c.estado) << "\n";
+            }
+        } else {
+            cerr << "[ERROR] No se pudo guardar conexiones.csv\n";
+        }
+    }
+
+    // UNIDADES
+    {
+        ofstream archivo(directorio + "unidades.csv");
+
+        if (archivo.is_open()) {
+            archivo << "codigo,tipo,capacidad_kg,costo_km,estado,especialidad\n";
+            archivo << setprecision(10);
+
+            for (const Unidad& u : unidades) {
+                archivo << escaparCampoCSV(u.codigo) << ","
+                        << escaparCampoCSV(u.tipo) << ","
+                        << u.capacidad_kg << ","
+                        << u.costo_km << ","
+                        << escaparCampoCSV(u.estado) << ","
+                        << escaparCampoCSV(u.especialidad) << "\n";
+            }
+        } else {
+            cerr << "[ERROR] No se pudo guardar unidades.csv\n";
+        }
+    }
+
+    // PEDIDOS
+    {
+        ofstream archivo(directorio + "pedidos.csv");
+
+        if (archivo.is_open()) {
+            archivo << "codigo,origen,destino,carga_kg,prioridad,estado,"
+                       "unidad_asignada,tipo_residuo\n";
+            archivo << setprecision(10);
+
+            for (const Pedido& p : pedidos) {
+                archivo << escaparCampoCSV(p.codigo) << ","
+                        << escaparCampoCSV(p.origen) << ","
+                        << escaparCampoCSV(p.destino) << ","
+                        << p.carga_kg << ","
+                        << escaparCampoCSV(p.prioridad) << ","
+                        << escaparCampoCSV(p.estado) << ","
+                        << escaparCampoCSV(p.unidad_asignada) << ","
+                        << escaparCampoCSV(p.tipo_residuo) << "\n";
+            }
+        } else {
+            cerr << "[ERROR] No se pudo guardar pedidos.csv\n";
+        }
+    }
+
+    // COMBUSTIBLE
+    {
+        ofstream archivo(directorio + "combustible.csv");
+
+        if (archivo.is_open()) {
+            archivo << "unidad,capacidad_tanque_l,combustible_actual_l,"
+                       "consumo_l_km\n";
+            archivo << setprecision(10);
+
+            for (const Combustible& c : combustibles) {
+                archivo << escaparCampoCSV(c.unidad) << ","
+                        << c.capacidad_tanque_l << ","
+                        << c.combustible_actual_l << ","
+                        << c.consumo_l_km << "\n";
+            }
+        } else {
+            cerr << "[ERROR] No se pudo guardar combustible.csv\n";
+        }
+    }
+
+    // MANTENIMIENTO
+    {
+        ofstream archivo(directorio + "mantenimiento.csv");
+
+        if (archivo.is_open()) {
+            archivo << "unidad,km_actual,km_ultimo_mantenimiento,intervalo_km\n";
+            archivo << setprecision(10);
+
+            for (const Mantenimiento& m : mantenimientos) {
+                archivo << escaparCampoCSV(m.unidad) << ","
+                        << m.km_actual << ","
+                        << m.km_ultimo_mantenimiento << ","
+                        << m.intervalo_km << "\n";
+            }
+        } else {
+            cerr << "[ERROR] No se pudo guardar mantenimiento.csv\n";
+        }
+    }
+
+    // HISTORIAL DE MANTENIMIENTO
+    {
+        ofstream archivo(directorio + "historial_mantenimiento.csv");
+
+        if (archivo.is_open()) {
+            archivo << "codigo_servicio,unidad,fecha,kilometraje,descripcion\n";
+            archivo << setprecision(10);
+
+            for (const HistorialMantenimiento& h : historial) {
+                archivo << escaparCampoCSV(h.codigo_servicio) << ","
+                        << escaparCampoCSV(h.unidad) << ","
+                        << escaparCampoCSV(h.fecha) << ","
+                        << h.kilometraje << ","
+                        << escaparCampoCSV(h.descripcion) << "\n";
+            }
+        } else {
+            cerr << "[ERROR] No se pudo guardar historial_mantenimiento.csv\n";
+        }
+    }
+
+    cout << "\n[OK] Los siete archivos CSV fueron guardados.\n";
 }
 
-// ============================================================================
-// [4.1.5] Generacion y persistencia de archivos CSV
-// ============================================================================
 
-void guardarPuntos(const std::vector<Punto>& puntos) {
-    const std::string ruta = resolverRutaCSV("puntos.csv");
-    std::ofstream archivo(ruta, std::ios::trunc);
-    if (!archivo.is_open()) {
-        std::cerr << "[ERROR] No se pudo guardar " << ruta << "\n";
+ // ============================================================================
+ // 4. Registro de información
+ // ============================================================================
+
+ // ---------------------------------------------------------------------------
+ // [4.1.3] FUNCIONES DE VALIDACIÓN - Autor: Carlos
+ // ---------------------------------------------------------------------------
+
+ // Comprueba si un código de punto ya está registrado.
+ bool existePunto(const vector<Punto>& puntos, const string& codigo) {
+     for (const Punto& p : puntos) {
+         if (p.codigo == codigo) return true;
+     }
+     return false;
+ }
+
+ // Comprueba si un código de unidad ya está registrado.
+ bool existeUnidad(const vector<Unidad>& unidades, const string& codigo) {
+     for (const Unidad& u : unidades) {
+         if (u.codigo == codigo) return true;
+     }
+     return false;
+ }
+
+ // Comprueba si un código de pedido ya está registrado.
+ bool existePedido(const vector<Pedido>& pedidos, const string& codigo) {
+     for (const Pedido& p : pedidos) {
+         if (p.codigo == codigo) return true;
+     }
+     return false;
+ }
+
+ // Comprueba si una opción pertenece a la lista permitida.
+ bool opcionValida(const string& valor, const vector<string>& opciones) {
+     return find(opciones.begin(), opciones.end(), valor) != opciones.end();
+ }
+
+ // Lee una linea; si la entrada se cierra (Ctrl+Z / Ctrl+D) termina el programa.
+ void leerLineaOSalir(string& destino) {
+     if (!getline(cin, destino)) {
+         cout << "\n[AVISO] Entrada finalizada. Saliendo del programa.\n";
+         exit(0);
+     }
+ }
+
+ // Solicita un texto obligatorio.
+ string leerTextoRegistro(const string& mensaje) {
+     string valor;
+
+     do {
+         cout << mensaje;
+         leerLineaOSalir(valor);
+         valor = limpiarTexto(valor);
+
+         if (valor.empty()) {
+             cout << "[ERROR] El campo no puede estar vacio.\n";
+         }
+     } while (valor.empty());
+
+     return valor;
+ }
+
+ // Solicita un número decimal mayor que cero.
+ double leerNumeroPositivo(const string& mensaje) {
+     string entrada;
+     double valor;
+
+     while (true) {
+         cout << mensaje;
+         leerLineaOSalir(entrada);
+
+         if (parsearDouble(entrada, valor) && valor > 0) {
+             return valor;
+         }
+
+         cout << "[ERROR] Ingrese un numero mayor que cero.\n";
+     }
+ }
+
+ // Solicita un numero decimal mayor o igual que cero.
+ double leerNumeroNoNegativo(const string& mensaje) {
+     string entrada;
+     double valor;
+
+     while (true) {
+         cout << mensaje;
+         leerLineaOSalir(entrada);
+
+         if (parsearDouble(entrada, valor) && valor >= 0) {
+             return valor;
+         }
+
+         cout << "[ERROR] Ingrese un numero mayor o igual que cero.\n";
+     }
+ }
+
+ // Solicita una opción perteneciente a una lista permitida.
+ string leerOpcionRegistro(
+     const string& mensaje,
+     const vector<string>& opciones
+ ) {
+     string valor;
+
+     while (true) {
+         cout << mensaje;
+         leerLineaOSalir(valor);
+         valor = limpiarTexto(valor);
+
+         if (opcionValida(valor, opciones)) {
+             return valor;
+         }
+
+         cout << "[ERROR] Opcion no valida. Opciones: ";
+         for (const string& opcion : opciones) {
+             cout << opcion << " ";
+         }
+         cout << "\n";
+     }
+ }
+
+ // ---------------------------------------------------------------------------
+ // [4.1.3] REGISTRAR PUNTOS - Autor: Carlos
+ // ---------------------------------------------------------------------------
+
+ void registrarPunto(
+     vector<Punto>& puntos,
+     const vector<Conexion>& conexiones,
+     const vector<Unidad>& unidades,
+     const vector<Pedido>& pedidos,
+     const vector<Combustible>& combustibles,
+     const vector<Mantenimiento>& mantenimientos,
+     const vector<HistorialMantenimiento>& historial
+ ) {
+     cout << "\n--- REGISTRAR PUNTO ---\n";
+
+     Punto p;
+
+     p.codigo = leerTextoRegistro("Codigo: ");
+
+     if (existePunto(puntos, p.codigo)) {
+         cout << "[ERROR] Ya existe un punto con ese codigo.\n";
+         return;
+     }
+
+     p.nombre = leerTextoRegistro("Nombre: ");
+     p.tipo_punto = leerTextoRegistro("Tipo de punto: ");
+     p.zona = leerTextoRegistro("Zona: ");
+
+     p.dias_sin_recolectar = 0;
+
+     puntos.push_back(p);
+
+     guardarTodo(
+         puntos, conexiones, unidades, pedidos,
+         combustibles, mantenimientos, historial
+     );
+
+     cout << "[OK] Punto registrado correctamente.\n";
+ }
+
+ // ---------------------------------------------------------------------------
+ // [4.1.3] REGISTRAR CONEXIONES - Autor: Carlos
+ // ---------------------------------------------------------------------------
+
+ void registrarConexion(
+     const vector<Punto>& puntos,
+     vector<Conexion>& conexiones,
+     const vector<Unidad>& unidades,
+     const vector<Pedido>& pedidos,
+     const vector<Combustible>& combustibles,
+     const vector<Mantenimiento>& mantenimientos,
+     const vector<HistorialMantenimiento>& historial
+ ) {
+     cout << "\n--- REGISTRAR CONEXION ---\n";
+
+     if (puntos.size() < 2) {
+         cout << "[ERROR] Se necesitan al menos dos puntos registrados.\n";
+         return;
+     }
+
+     Conexion c;
+
+     c.origen = leerTextoRegistro("Codigo del punto de origen: ");
+
+     if (!existePunto(puntos, c.origen)) {
+         cout << "[ERROR] El punto de origen no existe.\n";
+         return;
+     }
+
+     c.destino = leerTextoRegistro("Codigo del punto de destino: ");
+
+     if (!existePunto(puntos, c.destino)) {
+         cout << "[ERROR] El punto de destino no existe.\n";
+         return;
+     }
+
+     if (c.origen == c.destino) {
+         cout << "[ERROR] El origen y destino deben ser diferentes.\n";
+         return;
+     }
+
+     // Cada tramo se registra una sola vez, aunque sea bidireccional.
+     for (const Conexion& existente : conexiones) {
+         if ((existente.origen == c.origen &&
+              existente.destino == c.destino) ||
+             (existente.origen == c.destino &&
+              existente.destino == c.origen)) {
+             cout << "[ERROR] Esa conexion ya esta registrada.\n";
+             return;
+         }
+     }
+
+     c.distancia_km = leerNumeroPositivo("Distancia en km: ");
+
+     double tiempo = leerNumeroPositivo("Tiempo en minutos: ");
+
+     if (tiempo > 2147483647.0 || tiempo != static_cast<int>(tiempo)) {
+         cout << "[ERROR] El tiempo debe ser un numero entero valido.\n";
+         return;
+     }
+
+     c.tiempo_min = static_cast<int>(tiempo);
+
+     c.estado = leerOpcionRegistro(
+         "Estado (habilitada/cerrada): ",
+         {"habilitada", "cerrada"}
+     );
+
+     conexiones.push_back(c);
+
+     guardarTodo(
+         puntos, conexiones, unidades, pedidos,
+         combustibles, mantenimientos, historial
+     );
+
+     cout << "[OK] Conexion registrada correctamente.\n";
+ }
+
+ // ---------------------------------------------------------------------------
+ // [4.1.3] REGISTRAR UNIDADES - Autor: Carlos
+ // ---------------------------------------------------------------------------
+
+ void registrarUnidad(
+     const vector<Punto>& puntos,
+     const vector<Conexion>& conexiones,
+     vector<Unidad>& unidades,
+     const vector<Pedido>& pedidos,
+     const vector<Combustible>& combustibles,
+     const vector<Mantenimiento>& mantenimientos,
+     const vector<HistorialMantenimiento>& historial
+ ) {
+     cout << "\n--- REGISTRAR UNIDAD ---\n";
+
+     Unidad u;
+
+     u.codigo = leerTextoRegistro("Codigo de unidad: ");
+
+     if (existeUnidad(unidades, u.codigo)) {
+         cout << "[ERROR] Ya existe una unidad con ese codigo.\n";
+         return;
+     }
+
+     u.tipo = leerTextoRegistro("Tipo de unidad: ");
+     u.capacidad_kg = leerNumeroPositivo("Capacidad en kg: ");
+     u.costo_km = leerNumeroPositivo("Costo por km: ");
+
+     u.estado = leerOpcionRegistro(
+         "Estado (disponible/ocupada): ",
+         {"disponible", "ocupada"}
+     );
+
+     u.especialidad = leerOpcionRegistro(
+         "Especialidad (domiciliario/reciclable/desmonte): ",
+         {"domiciliario", "reciclable", "desmonte"}
+     );
+
+     unidades.push_back(u);
+
+     guardarTodo(
+         puntos, conexiones, unidades, pedidos,
+         combustibles, mantenimientos, historial
+     );
+
+     cout << "[OK] Unidad registrada correctamente.\n";
+ }
+
+
+ // ---------------------------------------------------------------------------
+ // [4.1.3] REGISTRAR PEDIDOS - Autor: Carlos
+ // ---------------------------------------------------------------------------
+
+void registrarPedido(
+    const vector<Punto>& puntos,
+    const vector<Conexion>& conexiones,
+    const vector<Unidad>& unidades,
+    vector<Pedido>& pedidos,
+    const vector<Combustible>& combustibles,
+    const vector<Mantenimiento>& mantenimientos,
+    const vector<HistorialMantenimiento>& historial
+) {
+    cout << "\n--- REGISTRAR PEDIDO ---\n";
+
+    if (puntos.size() < 2) {
+        cout << "[ERROR] Se necesitan al menos dos puntos registrados.\n";
         return;
     }
-    archivo << "codigo,nombre,tipo_punto,zona\n";
+
+    Pedido p;
+
+    p.codigo = leerTextoRegistro("Codigo de pedido: ");
+
+    if (existePedido(pedidos, p.codigo)) {
+        cout << "[ERROR] Ya existe un pedido con ese codigo.\n";
+        return;
+    }
+
+    p.origen = leerTextoRegistro("Punto de origen: ");
+
+    if (!existePunto(puntos, p.origen)) {
+        cout << "[ERROR] El punto de origen no existe.\n";
+        return;
+    }
+
+    p.destino = leerTextoRegistro("Punto de destino: ");
+
+    if (!existePunto(puntos, p.destino)) {
+        cout << "[ERROR] El punto de destino no existe.\n";
+        return;
+    }
+
+    if (p.origen == p.destino) {
+        cout << "[ERROR] El origen y destino deben ser diferentes.\n";
+        return;
+    }
+
+    p.carga_kg = leerNumeroPositivo("Carga en kg: ");
+
+    p.prioridad = leerOpcionRegistro(
+        "Prioridad (alta/media/baja): ",
+        {"alta", "media", "baja"}
+    );
+
+    p.tipo_residuo = leerOpcionRegistro(
+        "Tipo de residuo (domiciliario/reciclable/desmonte): ",
+        {"domiciliario", "reciclable", "desmonte"}
+    );
+
+    // Todo pedido nuevo comienza pendiente.
+    // La asignacion de unidades se realiza desde Gestion de estados.
+    p.estado = "pendiente";
+    p.unidad_asignada = "";
+
+    pedidos.push_back(p);
+
+    guardarTodo(
+        puntos, conexiones, unidades, pedidos,
+        combustibles, mantenimientos, historial
+    );
+
+    cout << "[OK] Pedido registrado correctamente.\n";
+    cout << "[INFO] El pedido quedo pendiente de asignacion.\n";
+}
+ 
+
+ // ============================================================================
+ // 5. Gestión de estados
+ // ============================================================================
+
+ // ---------------------------------------------------------------------------
+ // [4.1.4] GESTIÓN DE ESTADOS - Autor: Jason
+ // ---------------------------------------------------------------------------
+
+ // Cierra o habilita una conexión existente.
+ void gestionarConexion(
+     vector<Punto>& puntos,
+     vector<Conexion>& conexiones,
+     vector<Unidad>& unidades,
+     vector<Pedido>& pedidos,
+     vector<Combustible>& combustibles,
+     vector<Mantenimiento>& mantenimientos,
+     vector<HistorialMantenimiento>& historial
+ ) {
+     string origen = leerTextoRegistro("Codigo del punto de origen: ");
+     string destino = leerTextoRegistro("Codigo del punto de destino: ");
+
+     auto conexion = find_if(conexiones.begin(), conexiones.end(),
+         [&](const Conexion& c) {
+             return (c.origen == origen && c.destino == destino) ||
+                    (c.origen == destino && c.destino == origen);
+         });
+
+     if (conexion == conexiones.end()) {
+         cout << "[ERROR] La conexion no existe.\n";
+         return;
+     }
+
+     string nuevoEstado = leerOpcionRegistro(
+         "Seleccione el estado (cerrar/habilitar): ",
+         {"cerrar", "habilitar"}
+     );
+
+     if (nuevoEstado == "cerrar") {
+         if (conexion->estado == "cerrada") {
+             cout << "[AVISO] La conexion ya esta cerrada.\n";
+             return;
+         }
+
+         conexion->estado = "cerrada";
+     }
+     else {
+         if (conexion->estado == "habilitada") {
+             cout << "[AVISO] La conexion ya esta habilitada.\n";
+             return;
+         }
+
+         conexion->estado = "habilitada";
+     }
+
+     guardarTodo(puntos, conexiones, unidades, pedidos,
+                 combustibles, mantenimientos, historial);
+
+     cout << "[OK] Estado de la conexion actualizado.\n";
+ }
+
+
+ // Normaliza un texto para comparar especialidades y tipos de residuo.
+string normalizarEspecialidad(const string& texto) {
+    string resultado = limpiarTexto(texto);
+
+    transform(
+        resultado.begin(),
+        resultado.end(),
+        resultado.begin(),
+        [](unsigned char c) {
+            return static_cast<char>(tolower(c));
+        }
+    );
+
+    return resultado;
+}
+
+
+ 
+ // Asigna un pedido pendiente a una unidad disponible y compatible.
+void asignarPedido(
+    vector<Punto>& puntos,
+    vector<Conexion>& conexiones,
+    vector<Unidad>& unidades,
+    vector<Pedido>& pedidos,
+    vector<Combustible>& combustibles,
+    vector<Mantenimiento>& mantenimientos,
+    vector<HistorialMantenimiento>& historial
+) {
+    string codigoPedido = leerTextoRegistro("Codigo del pedido: ");
+
+    auto pedido = find_if(pedidos.begin(), pedidos.end(),
+        [&](const Pedido& p) {
+            return p.codigo == codigoPedido;
+        });
+
+    if (pedido == pedidos.end()) {
+        cout << "[ERROR] El pedido no existe.\n";
+        return;
+    }
+
+    if (pedido->estado != "pendiente") {
+        cout << "[ERROR] Solo se pueden asignar pedidos pendientes.\n";
+        return;
+    }
+
+    string codigoUnidad = leerTextoRegistro("Codigo de la unidad: ");
+
+    auto unidad = find_if(unidades.begin(), unidades.end(),
+        [&](const Unidad& u) {
+            return u.codigo == codigoUnidad;
+        });
+
+    if (unidad == unidades.end()) {
+        cout << "[ERROR] La unidad no existe.\n";
+        return;
+    }
+
+    if (unidad->estado != "disponible") {
+        cout << "[ERROR] La unidad no esta disponible.\n";
+        return;
+    }
+
+    if (unidad->capacidad_kg < pedido->carga_kg) {
+        cout << "[ERROR] La capacidad de la unidad es insuficiente.\n";
+        return;
+    }
+
+    // Validar que la unidad pueda transportar el tipo de residuo.
+    if (normalizarEspecialidad(unidad->especialidad).empty() ||
+        normalizarEspecialidad(pedido->tipo_residuo).empty()) {
+        cout << "[ERROR] Falta registrar la especialidad de la unidad "
+             << "o el tipo de residuo del pedido.\n";
+        return;
+    }
+
+    if (normalizarEspecialidad(unidad->especialidad) !=
+        normalizarEspecialidad(pedido->tipo_residuo)) {
+        cout << "[ERROR] La especialidad de la unidad no es compatible "
+             << "con el tipo de residuo del pedido.\n";
+        cout << "Tipo de residuo: " << pedido->tipo_residuo << "\n";
+        cout << "Especialidad de la unidad: " << unidad->especialidad << "\n";
+        return;
+    }
+
+    pedido->unidad_asignada = unidad->codigo;
+    pedido->estado = "asignado";
+    unidad->estado = "ocupada";
+
+    guardarTodo(
+        puntos, conexiones, unidades, pedidos,
+        combustibles, mantenimientos, historial
+    );
+
+    cout << "[OK] Pedido asignado correctamente.\n";
+}
+
+
+ // Marca un pedido asignado como entregado y libera la unidad utilizada.
+ void marcarPedidoEntregado(
+     vector<Punto>& puntos,
+     vector<Conexion>& conexiones,
+     vector<Unidad>& unidades,
+     vector<Pedido>& pedidos,
+     vector<Combustible>& combustibles,
+     vector<Mantenimiento>& mantenimientos,
+     vector<HistorialMantenimiento>& historial
+ ) {
+     string codigoPedido = leerTextoRegistro("Codigo del pedido: ");
+
+     auto pedido = find_if(pedidos.begin(), pedidos.end(),
+         [&](const Pedido& p) {
+             return p.codigo == codigoPedido;
+         });
+
+     if (pedido == pedidos.end()) {
+         cout << "[ERROR] El pedido no existe.\n";
+         return;
+     }
+
+     if (pedido->estado != "asignado") {
+         cout << "[ERROR] Solo se pueden entregar pedidos asignados.\n";
+         return;
+     }
+
+     auto unidad = find_if(unidades.begin(), unidades.end(),
+         [&](const Unidad& u) {
+             return u.codigo == pedido->unidad_asignada;
+         });
+
+     if (unidad == unidades.end()) {
+         cout << "[ERROR] No se encontro la unidad asignada al pedido.\n";
+         return;
+     }
+
+     pedido->estado = "entregado";
+     unidad->estado = "disponible";
+
+     // FA - Autor: Diana: al recolectar, el punto de origen reinicia su contador.
+     auto puntoOrigen = find_if(puntos.begin(), puntos.end(),
+         [&](const Punto& pt) {
+             return pt.codigo == pedido->origen;
+         });
+
+     if (puntoOrigen != puntos.end()) {
+         puntoOrigen->dias_sin_recolectar = 0;
+     }
+
+     guardarTodo(puntos, conexiones, unidades, pedidos,
+                 combustibles, mantenimientos, historial);
+
+     cout << "[OK] Pedido entregado. Unidad liberada correctamente.\n";
+ }
+
+
+
+// ============================================================================
+// 6. Consultas básicas
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// [4.1.6] CONSULTAS BÁSICAS - Autor: Diana
+// ---------------------------------------------------------------------------
+
+// Muestra todos los puntos registrados.
+void consultarPuntos(const vector<Punto>& puntos) {
+
+    cout << "\n--- PUNTOS REGISTRADOS ---\n";
+
+    if (puntos.empty()) {
+        cout << "[AVISO] No hay puntos registrados.\n";
+        return;
+    }
+
+    // Los anchos se ajustan al texto mas largo de cada columna.
+    size_t anchoCodigo = string("CODIGO").size();
+    size_t anchoNombre = string("NOMBRE").size();
+    size_t anchoTipo = string("TIPO").size();
+    size_t anchoZona = string("ZONA").size();
+
     for (const Punto& p : puntos) {
-        archivo << p.codigo << ","
-                << p.nombre << ","
-                << p.tipo_punto << ","
-                << p.zona << "\n";
+        anchoCodigo = max(anchoCodigo, p.codigo.size());
+        anchoNombre = max(anchoNombre, p.nombre.size());
+        anchoTipo = max(anchoTipo, p.tipo_punto.size());
+        anchoZona = max(anchoZona, p.zona.size());
     }
+
+    anchoCodigo += 3;
+    anchoNombre += 3;
+    anchoTipo += 3;
+    anchoZona += 3;
+
+    cout << left
+         << setw(anchoCodigo) << "CODIGO"
+         << setw(anchoNombre) << "NOMBRE"
+         << setw(anchoTipo) << "TIPO"
+         << setw(anchoZona) << "ZONA" << "\n";
+
+    cout << string(anchoCodigo + anchoNombre + anchoTipo + anchoZona, '-')
+         << "\n";
+
+    for (const Punto& p : puntos) {
+        cout << left
+             << setw(anchoCodigo) << p.codigo
+             << setw(anchoNombre) << p.nombre
+             << setw(anchoTipo) << p.tipo_punto
+             << setw(anchoZona) << p.zona << "\n";
+    }
+
+    cout << "\nTotal de puntos: " << puntos.size() << "\n";
 }
 
-void guardarConexiones(const std::vector<Conexion>& conexiones) {
-    const std::string ruta = resolverRutaCSV("conexiones.csv");
-    std::ofstream archivo(ruta, std::ios::trunc);
-    if (!archivo.is_open()) {
-        std::cerr << "[ERROR] No se pudo guardar " << ruta << "\n";
+
+// Muestra las conexiones de un punto en ambos sentidos.
+void consultarConexionesPunto(
+    const vector<Punto>& puntos,
+    const vector<Conexion>& conexiones
+) {
+
+    cout << "\n--- CONEXIONES DE UN PUNTO ---\n";
+
+    string codigo = leerTextoRegistro("Codigo del punto: ");
+
+    if (!existePunto(puntos, codigo)) {
+        cout << "[ERROR] El punto no existe.\n";
         return;
     }
-    archivo << "origen,destino,distancia_km,tiempo_min,estado\n";
+
+    bool encontrado = false;
+
+    cout << "\nConexiones del punto " << codigo << ":\n\n";
+
+    cout << left
+         << setw(15) << "ORIGEN"
+         << setw(15) << "DESTINO"
+         << setw(15) << "DISTANCIA"
+         << setw(15) << "TIEMPO"
+         << setw(15) << "ESTADO" << "\n";
+
+    cout << string(75, '-') << "\n";
+
     for (const Conexion& c : conexiones) {
-        archivo << c.origen << ","
-                << c.destino << ","
-                << c.distancia_km << ","
-                << c.tiempo_min << ","
-                << c.estado << "\n";
-    }
-}
 
-void guardarUnidades(const std::vector<Unidad>& unidades) {
-    const std::string ruta = resolverRutaCSV("unidades.csv");
-    std::ofstream archivo(ruta, std::ios::trunc);
-    if (!archivo.is_open()) {
-        std::cerr << "[ERROR] No se pudo guardar " << ruta << "\n";
-        return;
-    }
-    archivo << "codigo,tipo,capacidad_kg,costo_km,estado,especialidad\n";
-    for (const Unidad& u : unidades) {
-        archivo << u.codigo << ","
-                << u.tipo << ","
-                << u.capacidad_kg << ","
-                << u.costo_km << ","
-                << u.estado << ","
-                << u.especialidad << "\n";
-    }
-}
+        if (c.origen == codigo || c.destino == codigo) {
 
-void guardarPedidos(const std::vector<Pedido>& pedidos) {
-    const std::string ruta = resolverRutaCSV("pedidos.csv");
-    std::ofstream archivo(ruta, std::ios::trunc);
-    if (!archivo.is_open()) {
-        std::cerr << "[ERROR] No se pudo guardar " << ruta << "\n";
-        return;
-    }
-    archivo << "codigo,origen,destino,carga_kg,prioridad,estado,unidad_asignada,tipo_residuo\n";
-    for (const Pedido& ped : pedidos) {
-        archivo << ped.codigo << ","
-                << ped.origen << ","
-                << ped.destino << ","
-                << ped.carga_kg << ","
-                << ped.prioridad << ","
-                << ped.estado << ","
-                << ped.unidad_asignada << ","
-                << ped.tipo_residuo << "\n";
-    }
-}
+            encontrado = true;
 
-void guardarTodo(const std::vector<Punto>& puntos,
-                 const std::vector<Conexion>& conexiones,
-                 const std::vector<Unidad>& unidades,
-                 const std::vector<Pedido>& pedidos) {
-    guardarPuntos(puntos);
-    guardarConexiones(conexiones);
-    guardarUnidades(unidades);
-    guardarPedidos(pedidos);
-}
-
-// ============================================================================
-// Funcionalidad adicional (Juan David Morales Rabelly):
-// Clasificacion por tipo de residuo y asignacion de camiones especializados
-// ============================================================================
-
-bool esCategoriaResiduoValida(const std::string& categoria) {
-    const std::string norm = aMinusculas(recortar(categoria));
-    return norm == "domiciliario" || norm == "reciclable" || norm == "desmonte";
-}
-
-std::string leerTextoNoVacio(const std::string& prompt) {
-    while (true) {
-        std::cout << prompt;
-        std::string linea;
-        if (!std::getline(std::cin, linea)) {
-            return "";
-        }
-        linea = recortar(linea);
-        if (!linea.empty()) {
-            return linea;
-        }
-        std::cout << "El valor no puede estar vacio. Intente nuevamente.\n";
-    }
-}
-
-double leerDoublePositivo(const std::string& prompt) {
-    while (true) {
-        std::cout << prompt;
-        std::string linea;
-        if (!std::getline(std::cin, linea)) {
-            return -1.0;
-        }
-        linea = recortar(linea);
-        try {
-            std::size_t procesados = 0;
-            double valor = std::stod(linea, &procesados);
-            if (procesados == linea.size() && valor > 0.0) {
-                return valor;
-            }
-        } catch (...) {
-        }
-        std::cout << "Ingrese un numero positivo valido.\n";
-    }
-}
-
-std::string leerCategoriaResiduo(const std::string& prompt) {
-    while (true) {
-        std::cout << prompt << "\n"
-                  << "  1. domiciliario\n"
-                  << "  2. reciclable (Programa Bolsa Naranja)\n"
-                  << "  3. desmonte\n"
-                  << "Seleccione (1-3 o nombre): ";
-        std::string entrada;
-        if (!std::getline(std::cin, entrada)) {
-            return "";
-        }
-        const std::string norm = aMinusculas(recortar(entrada));
-        if (norm == "1" || norm == "domiciliario") {
-            return "domiciliario";
-        }
-        if (norm == "2" || norm == "reciclable") {
-            return "reciclable";
-        }
-        if (norm == "3" || norm == "desmonte") {
-            return "desmonte";
-        }
-        std::cout << "Categoria invalida. Use domiciliario, reciclable o desmonte.\n";
-    }
-}
-
-std::string leerPrioridadPedido() {
-    while (true) {
-        std::cout << "Prioridad (alta / media / baja): ";
-        std::string entrada;
-        if (!std::getline(std::cin, entrada)) {
-            return "";
-        }
-        const std::string norm = aMinusculas(recortar(entrada));
-        if (norm == "alta" || norm == "media" || norm == "baja") {
-            return norm;
-        }
-        std::cout << "Prioridad invalida. Ingrese alta, media o baja.\n";
-    }
-}
-
-int buscarIndiceUnidad(const std::vector<Unidad>& unidades, const std::string& codigo) {
-    const std::string buscado = aMinusculas(recortar(codigo));
-    for (std::size_t i = 0; i < unidades.size(); ++i) {
-        if (aMinusculas(recortar(unidades[i].codigo)) == buscado) {
-            return static_cast<int>(i);
+            cout << left
+                 << setw(15) << c.origen
+                 << setw(15) << c.destino
+                 << setw(15) << c.distancia_km
+                 << setw(15) << c.tiempo_min
+                 << setw(15) << c.estado << "\n";
         }
     }
-    return -1;
-}
 
-int buscarIndicePedido(const std::vector<Pedido>& pedidos, const std::string& codigo) {
-    const std::string buscado = aMinusculas(recortar(codigo));
-    for (std::size_t i = 0; i < pedidos.size(); ++i) {
-        if (aMinusculas(recortar(pedidos[i].codigo)) == buscado) {
-            return static_cast<int>(i);
-        }
-    }
-    return -1;
-}
-
-bool validarCompatibilidadResiduo(const Pedido& pedido,
-                                  const Unidad& unidad,
-                                  std::string& motivoRechazo) {
-    const std::string tipoPed = aMinusculas(recortar(pedido.tipo_residuo));
-    const std::string espUni = aMinusculas(recortar(unidad.especialidad));
-
-    if (!esCategoriaResiduoValida(tipoPed) || !esCategoriaResiduoValida(espUni)) {
-        motivoRechazo = "El pedido o la unidad no tiene una categoria de residuo valida registrada.";
-        return false;
-    }
-    if (tipoPed != espUni) {
-        motivoRechazo = "Operacion rechazada: el pedido " + pedido.codigo +
-                        " es de tipo '" + pedido.tipo_residuo +
-                        "' y la unidad " + unidad.codigo +
-                        " tiene especialidad '" + unidad.especialidad + "'.";
-        return false;
-    }
-    if (aMinusculas(recortar(pedido.estado)) != "pendiente") {
-        motivoRechazo = "El pedido " + pedido.codigo + " no esta pendiente (estado: '" +
-                        pedido.estado + "').";
-        return false;
-    }
-    if (aMinusculas(recortar(unidad.estado)) != "disponible") {
-        motivoRechazo = "La unidad " + unidad.codigo + " no esta disponible (estado: '" +
-                        unidad.estado + "').";
-        return false;
-    }
-    if (unidad.capacidad_kg < pedido.carga_kg) {
-        std::ostringstream oss;
-        oss << "Capacidad insuficiente: el pedido " << pedido.codigo
-            << " pesa " << pedido.carga_kg << " kg y " << unidad.codigo
-            << " soporta " << unidad.capacidad_kg << " kg.";
-        motivoRechazo = oss.str();
-        return false;
-    }
-    return true;
-}
-
-void mostrarUnidadesEspecializadas(const std::vector<Unidad>& unidades) {
-    std::cout << "\n-- Camiones recolectores --\n";
-    for (const Unidad& u : unidades) {
-        std::cout << "  " << u.codigo << " | " << u.tipo
-                  << " | esp: " << (u.especialidad.empty() ? "(sin definir)" : u.especialidad)
-                  << " | cap: " << u.capacidad_kg << " kg"
-                  << " | estado: " << u.estado << "\n";
+    if (!encontrado) {
+        cout << "[AVISO] El punto no tiene conexiones registradas.\n";
     }
 }
 
-void mostrarPedidosClasificados(const std::vector<Pedido>& pedidos) {
-    std::cout << "\n-- Solicitudes de recojo --\n";
+
+// Muestra los pedidos según su estado.
+void consultarPedidosPorEstado(const vector<Pedido>& pedidos) {
+
+    cout << "\n--- PEDIDOS POR ESTADO ---\n";
+
+    string estado = leerOpcionRegistro(
+        "Seleccione el estado (pendiente/asignado/entregado): ",
+        {"pendiente", "asignado", "entregado"}
+    );
+
+    bool encontrado = false;
+    int cantidad = 0;
+
+    cout << "\nPedidos con estado: " << estado << "\n\n";
+
+    cout << left
+         << setw(12) << "CODIGO"
+         << setw(12) << "ORIGEN"
+         << setw(12) << "DESTINO"
+         << setw(15) << "CARGA (KG)"
+         << setw(12) << "PRIORIDAD"
+         << setw(15) << "UNIDAD" << "\n";
+
+    cout << string(78, '-') << "\n";
+
     for (const Pedido& p : pedidos) {
-        std::cout << "  " << p.codigo << " (" << p.origen << " -> " << p.destino << ")"
-                  << " | carga: " << p.carga_kg << " kg"
-                  << " | tipo: " << (p.tipo_residuo.empty() ? "(sin definir)" : p.tipo_residuo)
-                  << " | estado: " << p.estado;
-        if (!p.unidad_asignada.empty()) {
-            std::cout << " | unidad: " << p.unidad_asignada;
+
+        if (p.estado == estado) {
+
+            encontrado = true;
+            cantidad++;
+
+            cout << left
+                 << setw(12) << p.codigo
+                 << setw(12) << p.origen
+                 << setw(12) << p.destino
+                 << setw(15) << p.carga_kg
+                 << setw(12) << p.prioridad
+                 << setw(15) << (
+                     p.unidad_asignada.empty()
+                     ? "Sin asignar"
+                     : p.unidad_asignada
+                 ) << "\n";
         }
-        std::cout << "\n";
     }
+
+    if (!encontrado) {
+        cout << "[AVISO] No hay pedidos con ese estado.\n";
+    }
+
+    cout << "\nTotal de pedidos: " << cantidad << "\n";
 }
 
-void registrarUnidadEspecializada(std::vector<Unidad>& unidades) {
-    const std::string codigo = leerTextoNoVacio("Codigo de unidad (ej. U04): ");
-    if (codigo.empty()) {
-        return;
-    }
-    if (buscarIndiceUnidad(unidades, codigo) != -1) {
-        std::cout << "[ERROR] Ya existe una unidad con el codigo " << codigo << ".\n";
+
+// Muestra los pedidos relacionados con una unidad.
+void consultarPedidosPorUnidad(
+    const vector<Unidad>& unidades,
+    const vector<Pedido>& pedidos
+) {
+
+    cout << "\n--- PEDIDOS POR UNIDAD ---\n";
+
+    string codigo = leerTextoRegistro("Codigo de la unidad: ");
+
+    if (!existeUnidad(unidades, codigo)) {
+        cout << "[ERROR] La unidad no existe.\n";
         return;
     }
 
-    Unidad nueva;
-    nueva.codigo = codigo;
-    nueva.tipo = leerTextoNoVacio("Descripcion/tipo de camion (ej. Camion Bolsa Naranja): ");
-    if (nueva.tipo.empty()) {
-        return;
-    }
-    nueva.capacidad_kg = leerDoublePositivo("Capacidad maxima (kg): ");
-    if (nueva.capacidad_kg <= 0.0) {
-        return;
-    }
-    nueva.costo_km = leerDoublePositivo("Costo por kilometro (S/): ");
-    if (nueva.costo_km <= 0.0) {
-        return;
-    }
-    nueva.estado = "disponible";
-    nueva.especialidad = leerCategoriaResiduo("Especialidad de la unidad:");
-    if (nueva.especialidad.empty()) {
-        return;
+    bool encontrado = false;
+    int cantidad = 0;
+
+    cout << "\nPedidos de la unidad " << codigo << ":\n\n";
+
+    cout << left
+         << setw(12) << "CODIGO"
+         << setw(12) << "ORIGEN"
+         << setw(12) << "DESTINO"
+         << setw(15) << "CARGA (KG)"
+         << setw(12) << "PRIORIDAD"
+         << setw(15) << "ESTADO" << "\n";
+
+    cout << string(78, '-') << "\n";
+
+    for (const Pedido& p : pedidos) {
+
+        if (p.unidad_asignada == codigo) {
+
+            encontrado = true;
+            cantidad++;
+
+            cout << left
+                 << setw(12) << p.codigo
+                 << setw(12) << p.origen
+                 << setw(12) << p.destino
+                 << setw(15) << p.carga_kg
+                 << setw(12) << p.prioridad
+                 << setw(15) << p.estado << "\n";
+        }
     }
 
-    unidades.push_back(nueva);
-    guardarUnidades(unidades);
-    std::cout << "[OK] Unidad " << nueva.codigo << " registrada con especialidad '"
-              << nueva.especialidad << "' y guardada en unidades.csv.\n";
+    if (!encontrado) {
+        cout << "[AVISO] La unidad no tiene pedidos relacionados.\n";
+    }
+
+    cout << "\nTotal de pedidos: " << cantidad << "\n";
 }
 
-void actualizarEspecialidadUnidad(std::vector<Unidad>& unidades) {
-    if (unidades.empty()) {
-        std::cout << "No hay unidades registradas.\n";
-        return;
-    }
-    mostrarUnidadesEspecializadas(unidades);
-    const std::string codigo = leerTextoNoVacio("Codigo de la unidad a clasificar: ");
-    const int idx = buscarIndiceUnidad(unidades, codigo);
-    if (idx == -1) {
-        std::cout << "[ERROR] No se encontro la unidad " << codigo << ".\n";
-        return;
-    }
-    const std::string nuevaEsp = leerCategoriaResiduo("Nueva especialidad para " + unidades[idx].codigo + ":");
-    if (nuevaEsp.empty()) {
-        return;
-    }
-    unidades[idx].especialidad = nuevaEsp;
-    guardarUnidades(unidades);
-    std::cout << "[OK] Especialidad de " << unidades[idx].codigo
-              << " actualizada a '" << nuevaEsp << "' en unidades.csv.\n";
+
+// Menú para acceder a las cuatro consultas básicas.
+void menuConsultas(
+    const vector<Punto>& puntos,
+    const vector<Conexion>& conexiones,
+    const vector<Unidad>& unidades,
+    const vector<Pedido>& pedidos
+) {
+
+    string opcion;
+
+    do {
+
+        cout << "\n====================================\n";
+        cout << "       CONSULTAS BASICAS\n";
+        cout << "====================================\n";
+        cout << "1. Mostrar puntos registrados\n";
+        cout << "2. Consultar conexiones de un punto\n";
+        cout << "3. Consultar pedidos por estado\n";
+        cout << "4. Consultar pedidos por unidad\n";
+        cout << "0. Volver al menu principal\n";
+        cout << "====================================\n";
+
+        opcion = leerOpcionRegistro(
+            "Seleccione una opcion: ",
+            {"0", "1", "2", "3", "4"}
+        );
+
+        if (opcion == "1") {
+            consultarPuntos(puntos);
+        }
+        else if (opcion == "2") {
+            consultarConexionesPunto(puntos, conexiones);
+        }
+        else if (opcion == "3") {
+            consultarPedidosPorEstado(pedidos);
+        }
+        else if (opcion == "4") {
+            consultarPedidosPorUnidad(unidades, pedidos);
+        }
+
+    } while (opcion != "0");
 }
 
-void registrarPedidoClasificado(std::vector<Pedido>& pedidos) {
-    const std::string codigo = leerTextoNoVacio("Codigo de solicitud (ej. R07): ");
-    if (codigo.empty()) {
-        return;
-    }
-    if (buscarIndicePedido(pedidos, codigo) != -1) {
-        std::cout << "[ERROR] Ya existe un pedido con el codigo " << codigo << ".\n";
-        return;
-    }
 
-    Pedido nuevo;
-    nuevo.codigo = codigo;
-    nuevo.origen = leerTextoNoVacio("Punto de origen (ej. P04): ");
-    if (nuevo.origen.empty()) {
-        return;
-    }
-    nuevo.destino = leerTextoNoVacio("Punto de destino (ej. P07): ");
-    if (nuevo.destino.empty()) {
-        return;
-    }
-    nuevo.carga_kg = leerDoublePositivo("Carga estimada (kg): ");
-    if (nuevo.carga_kg <= 0.0) {
-        return;
-    }
-    nuevo.prioridad = leerPrioridadPedido();
-    if (nuevo.prioridad.empty()) {
-        return;
-    }
-    nuevo.estado = "pendiente";
-    nuevo.unidad_asignada = "";
-    nuevo.tipo_residuo = leerCategoriaResiduo("Tipo de residuo del pedido:");
-    if (nuevo.tipo_residuo.empty()) {
-        return;
-    }
 
-    pedidos.push_back(nuevo);
-    guardarPedidos(pedidos);
-    std::cout << "[OK] Pedido " << nuevo.codigo << " (" << nuevo.tipo_residuo
-              << ") registrado y guardado en pedidos.csv.\n";
+// ============================================================================
+// 7. Funcionalidades adicionales
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// FA - Autor: Diana
+// PRIORIZACION AUTOMATICA DE PUNTOS POR RIESGO SANITARIO
+//
+// Cada tipo de punto tiene un maximo de dias permitidos sin recojo:
+//   mercado = 2 | residencial = 3 | comercial = 4 | recreativo = 4
+// Los centros de acopio y plantas no se evaluan (no generan residuos).
+//   dias > maximo  -> Riesgo ALTO  (pedidos a prioridad alta + camion sugerido)
+//   dias = maximo  -> Riesgo MEDIO (pedidos suben al menos a prioridad media)
+//   dias < maximo  -> Riesgo BAJO
+// ---------------------------------------------------------------------------
+
+// Dias maximos sin recojo segun el tipo de punto (-1 = no se evalua).
+int umbralDiasPorTipo(const string& tipoPunto) {
+    string tipo = normalizarEspecialidad(tipoPunto);
+
+    if (tipo == "mercado") return 2;
+    if (tipo == "residencial") return 3;
+    if (tipo == "comercial") return 4;
+    if (tipo == "recreativo") return 4;
+
+    return -1;
 }
 
-void actualizarTipoResiduoPedido(std::vector<Pedido>& pedidos) {
-    if (pedidos.empty()) {
-        std::cout << "No hay pedidos registrados.\n";
-        return;
-    }
-    mostrarPedidosClasificados(pedidos);
-    const std::string codigo = leerTextoNoVacio("Codigo del pedido a clasificar: ");
-    const int idx = buscarIndicePedido(pedidos, codigo);
-    if (idx == -1) {
-        std::cout << "[ERROR] No se encontro el pedido " << codigo << ".\n";
-        return;
-    }
-    const std::string nuevoTipo = leerCategoriaResiduo("Nuevo tipo de residuo para " + pedidos[idx].codigo + ":");
-    if (nuevoTipo.empty()) {
-        return;
-    }
-    pedidos[idx].tipo_residuo = nuevoTipo;
-    guardarPedidos(pedidos);
-    std::cout << "[OK] Tipo de residuo de " << pedidos[idx].codigo
-              << " actualizado a '" << nuevoTipo << "' en pedidos.csv.\n";
+// Clasifica el riesgo sanitario de un punto.
+string nivelRiesgoSanitario(int dias, int umbral) {
+    if (umbral < 0) return "";
+    if (dias > umbral) return "alto";
+    if (dias == umbral) return "medio";
+    return "bajo";
 }
 
-void asignarPedidoEspecializado(std::vector<Pedido>& pedidos, std::vector<Unidad>& unidades) {
-    if (pedidos.empty() || unidades.empty()) {
-        std::cout << "Se requieren pedidos y unidades registradas para asignar.\n";
-        return;
-    }
-    mostrarPedidosClasificados(pedidos);
-    mostrarUnidadesEspecializadas(unidades);
-
-    const std::string codPedido = leerTextoNoVacio("\nCodigo del pedido a asignar: ");
-    const int idxPed = buscarIndicePedido(pedidos, codPedido);
-    if (idxPed == -1) {
-        std::cout << "[ERROR] No existe el pedido " << codPedido << ".\n";
-        return;
-    }
-
-    const std::string codUnidad = leerTextoNoVacio("Codigo de la unidad a asignar: ");
-    const int idxUni = buscarIndiceUnidad(unidades, codUnidad);
-    if (idxUni == -1) {
-        std::cout << "[ERROR] No existe la unidad " << codUnidad << ".\n";
-        return;
-    }
-
-    std::string motivoRechazo;
-    if (!validarCompatibilidadResiduo(pedidos[idxPed], unidades[idxUni], motivoRechazo)) {
-        std::cout << "[RECHAZADO] " << motivoRechazo << "\n";
-        return;
-    }
-
-    pedidos[idxPed].estado = "asignado";
-    pedidos[idxPed].unidad_asignada = unidades[idxUni].codigo;
-    unidades[idxUni].estado = "ocupada";
-    guardarPedidos(pedidos);
-    guardarUnidades(unidades);
-
-    std::cout << "[OK] Pedido " << pedidos[idxPed].codigo << " (" << pedidos[idxPed].tipo_residuo
-              << ") asignado a la unidad " << unidades[idxUni].codigo
-              << ". Cambios guardados en CSV.\n";
+int pesoNivelRiesgo(const string& nivel) {
+    if (nivel == "alto") return 3;
+    if (nivel == "medio") return 2;
+    if (nivel == "bajo") return 1;
+    return 0;
 }
 
-void mostrarResumenPorCategoria(const std::vector<Pedido>& pedidos) {
-    const std::vector<std::string> categorias = {"domiciliario", "reciclable", "desmonte"};
-    std::cout << "\n=== RESUMEN DE RESIDUOS POR CATEGORIA (SURCO) ===\n";
-    for (const std::string& cat : categorias) {
-        int cantidad = 0;
-        double pesoTotal = 0.0;
-        for (const Pedido& p : pedidos) {
-            if (aMinusculas(recortar(p.tipo_residuo)) == cat) {
-                ++cantidad;
-                pesoTotal += p.carga_kg;
+struct RiesgoPunto {
+    string codigo;
+    string nombre;
+    string tipo;
+    string nivel;
+    int dias = 0;
+    int umbral = 0;
+};
+
+// Calcula el riesgo de cada punto de recojo, del mas critico al menos critico.
+vector<RiesgoPunto> calcularRiesgos(const vector<Punto>& puntos) {
+    vector<RiesgoPunto> riesgos;
+
+    for (const Punto& p : puntos) {
+        int umbral = umbralDiasPorTipo(p.tipo_punto);
+        if (umbral < 0) continue;
+
+        RiesgoPunto r;
+        r.codigo = p.codigo;
+        r.nombre = p.nombre;
+        r.tipo = p.tipo_punto;
+        r.dias = p.dias_sin_recolectar;
+        r.umbral = umbral;
+        r.nivel = nivelRiesgoSanitario(r.dias, umbral);
+        riesgos.push_back(r);
+    }
+
+    sort(riesgos.begin(), riesgos.end(),
+        [](const RiesgoPunto& a, const RiesgoPunto& b) {
+            if (pesoNivelRiesgo(a.nivel) != pesoNivelRiesgo(b.nivel)) {
+                return pesoNivelRiesgo(a.nivel) > pesoNivelRiesgo(b.nivel);
             }
-        }
-        std::cout << "Categoria " << cat << ": " << pesoTotal << " kg ("
-                  << cantidad << (cantidad == 1 ? " pedido)" : " pedidos)");
-        if (cat == "reciclable") {
-            std::ostringstream bono;
-            bono << std::fixed << std::setprecision(2) << (pesoTotal * 0.50);
-            std::cout << " | Bono valorizacion (S/ 0.50/kg): S/ " << bono.str();
-        }
-        std::cout << "\n";
-    }
+            if ((a.dias - a.umbral) != (b.dias - b.umbral)) {
+                return (a.dias - a.umbral) > (b.dias - b.umbral);
+            }
+            return a.codigo < b.codigo;
+        });
+
+    return riesgos;
 }
 
-void menuClasificacionEspecializada(std::vector<Unidad>& unidades,
-                                    std::vector<Pedido>& pedidos) {
-    int subopcion = -1;
-    do {
-        std::cout << "\n--- CLASIFICACION POR RESIDUO Y ASIGNACION ESPECIALIZADA ---\n";
-        std::cout << "1. Registrar nueva unidad con especialidad\n";
-        std::cout << "2. Actualizar especialidad de una unidad existente\n";
-        std::cout << "3. Registrar nuevo pedido con tipo de residuo\n";
-        std::cout << "4. Actualizar tipo de residuo de un pedido existente\n";
-        std::cout << "5. Asignar pedido a camion (validando especialidad y capacidad)\n";
-        std::cout << "6. Ver resumen por categoria de residuo\n";
-        std::cout << "0. Volver al menu principal\n";
-        subopcion = leerOpcionEntera("Seleccione una opcion: ", 0);
+// Simula el paso de dias: todos los puntos de recojo acumulan dias sin recojo.
+void avanzarDiasSinRecolectar(
+    vector<Punto>& puntos,
+    const vector<Conexion>& conexiones,
+    const vector<Unidad>& unidades,
+    const vector<Pedido>& pedidos,
+    const vector<Combustible>& combustibles,
+    const vector<Mantenimiento>& mantenimientos,
+    const vector<HistorialMantenimiento>& historial
+) {
+    cout << "\n--- AVANZAR DIAS SIN RECOLECTAR ---\n";
 
-        switch (subopcion) {
-            case 1:
-                registrarUnidadEspecializada(unidades);
-                break;
-            case 2:
-                actualizarEspecialidadUnidad(unidades);
-                break;
-            case 3:
-                registrarPedidoClasificado(pedidos);
-                break;
-            case 4:
-                actualizarTipoResiduoPedido(pedidos);
-                break;
-            case 5:
-                asignarPedidoEspecializado(pedidos, unidades);
-                break;
-            case 6:
-                mostrarResumenPorCategoria(pedidos);
-                break;
-            case 0:
-                break;
-            default:
-                std::cout << "Opcion invalida.\n";
-                break;
-        }
-    } while (subopcion != 0);
-}
+    double dias = leerNumeroPositivo("Cantidad de dias a avanzar: ");
 
-// ============================================================================
-// Puntos de extension (Stubs para integracion del equipo)
-// ============================================================================
-
-// TODO [4.1.3 - Carlos]: Implementar registro de punto de recojo/acopio
-void registrarPunto(std::vector<Punto>& /*puntos*/) {
-    std::cout << "[Stub] Registrar punto de recojo/acopio - Pendiente [4.1.3 - Carlos]\n";
-}
-
-// TODO [4.1.3 - Carlos]: Implementar registro de via/conexion
-void registrarConexion(std::vector<Conexion>& /*conexiones*/,
-                       const std::vector<Punto>& /*puntos*/) {
-    std::cout << "[Stub] Registrar via/conexion - Pendiente [4.1.3 - Carlos]\n";
-}
-
-// TODO [4.1.3 - Carlos]: Implementar registro de camion recolector
-void registrarUnidad(std::vector<Unidad>& /*unidades*/) {
-    std::cout << "[Stub] Registrar camion recolector - Pendiente [4.1.3 - Carlos]\n";
-}
-
-// TODO [4.1.3 - Carlos]: Implementar registro de solicitud de recojo
-void registrarPedido(std::vector<Pedido>& /*pedidos*/,
-                     const std::vector<Punto>& /*puntos*/) {
-    std::cout << "[Stub] Registrar solicitud de recojo - Pendiente [4.1.3 - Carlos]\n";
-}
-
-void menuRegistrarDatos(std::vector<Punto>& puntos,
-                        std::vector<Conexion>& conexiones,
-                        std::vector<Unidad>& unidades,
-                        std::vector<Pedido>& pedidos) {
-    int subopcion = -1;
-    do {
-        std::cout << "\n--- REGISTRAR DATOS (SURCO) ---\n";
-        std::cout << "1. Registrar punto de recojo/acopio\n";
-        std::cout << "2. Registrar via/conexion\n";
-        std::cout << "3. Registrar camion recolector\n";
-        std::cout << "4. Registrar solicitud de recojo\n";
-        std::cout << "0. Volver al menu principal\n";
-        subopcion = leerOpcionEntera("Seleccione una opcion: ", 0);
-
-        switch (subopcion) {
-            case 1:
-                // TODO [4.1.3 - Carlos]
-                registrarPunto(puntos);
-                break;
-            case 2:
-                // TODO [4.1.3 - Carlos]
-                registrarConexion(conexiones, puntos);
-                break;
-            case 3:
-                // TODO [4.1.3 - Carlos]
-                registrarUnidad(unidades);
-                break;
-            case 4:
-                // TODO [4.1.3 - Carlos]
-                registrarPedido(pedidos, puntos);
-                break;
-            case 0:
-                break;
-            default:
-                std::cout << "Opcion invalida.\n";
-                break;
-        }
-    } while (subopcion != 0);
-}
-
-// TODO [4.1.4 - Jason]: Implementar habilitar/cerrar via
-void gestionarEstadoVia(std::vector<Conexion>& /*conexiones*/) {
-    std::cout << "[Stub] Habilitar/Cerrar via - Pendiente [4.1.4 - Jason]\n";
-}
-
-// TODO [4.1.4 - Jason]: Implementar asignacion de solicitud a camion
-// Nota de integracion: utilizar validarCompatibilidadResiduo(pedido, unidad, motivo)
-// para validar tipo_residuo == especialidad, disponibilidad y capacidad.
-void asignarSolicitudACamion(std::vector<Pedido>& /*pedidos*/,
-                               std::vector<Unidad>& /*unidades*/) {
-    std::cout << "[Stub] Asignar solicitud a camion - Pendiente [4.1.4 - Jason]\n";
-}
-
-// TODO [4.1.4 - Jason]: Implementar marcado de solicitud como entregada
-void marcarSolicitudEntregada(std::vector<Pedido>& /*pedidos*/,
-                              std::vector<Unidad>& /*unidades*/) {
-    std::cout << "[Stub] Marcar solicitud como entregada - Pendiente [4.1.4 - Jason]\n";
-}
-
-void menuGestionarEstados(std::vector<Conexion>& conexiones,
-                          std::vector<Unidad>& unidades,
-                          std::vector<Pedido>& pedidos) {
-    int subopcion = -1;
-    do {
-        std::cout << "\n--- GESTIONAR ESTADOS ---\n";
-        std::cout << "1. Habilitar/Cerrar via\n";
-        std::cout << "2. Asignar solicitud a camion\n";
-        std::cout << "3. Marcar solicitud como entregada\n";
-        std::cout << "0. Volver al menu principal\n";
-        subopcion = leerOpcionEntera("Seleccione una opcion: ", 0);
-
-        switch (subopcion) {
-            case 1:
-                // TODO [4.1.4 - Jason]
-                gestionarEstadoVia(conexiones);
-                break;
-            case 2:
-                // TODO [4.1.4 - Jason]
-                asignarSolicitudACamion(pedidos, unidades);
-                break;
-            case 3:
-                // TODO [4.1.4 - Jason]
-                marcarSolicitudEntregada(pedidos, unidades);
-                break;
-            case 0:
-                break;
-            default:
-                std::cout << "Opcion invalida.\n";
-                break;
-        }
-    } while (subopcion != 0);
-}
-
-// TODO [4.1.6 - Diana]: Implementar listado de puntos
-void listarPuntos(const std::vector<Punto>& /*puntos*/) {
-    std::cout << "[Stub] Listar puntos - Pendiente [4.1.6 - Diana]\n";
-}
-
-// TODO [4.1.6 - Diana]: Implementar consulta de conexiones de un punto
-void consultarConexionesDePunto(const std::vector<Conexion>& /*conexiones*/) {
-    std::cout << "[Stub] Conexiones de un punto - Pendiente [4.1.6 - Diana]\n";
-}
-
-// TODO [4.1.6 - Diana]: Implementar consulta de solicitudes por estado
-void consultarSolicitudesPorEstado(const std::vector<Pedido>& /*pedidos*/) {
-    std::cout << "[Stub] Solicitudes por estado - Pendiente [4.1.6 - Diana]\n";
-}
-
-// TODO [4.1.6 - Diana]: Implementar consulta de solicitudes por camion
-void consultarSolicitudesPorCamion(const std::vector<Pedido>& /*pedidos*/) {
-    std::cout << "[Stub] Solicitudes por camion - Pendiente [4.1.6 - Diana]\n";
-}
-
-void menuConsultasBasicas(const std::vector<Punto>& puntos,
-                          const std::vector<Conexion>& conexiones,
-                          const std::vector<Pedido>& pedidos) {
-    int subopcion = -1;
-    do {
-        std::cout << "\n--- CONSULTAS BASICAS ---\n";
-        std::cout << "1. Listar puntos de recojo y acopio\n";
-        std::cout << "2. Consultar conexiones de un punto\n";
-        std::cout << "3. Consultar solicitudes por estado\n";
-        std::cout << "4. Consultar solicitudes por camion\n";
-        std::cout << "0. Volver al menu principal\n";
-        subopcion = leerOpcionEntera("Seleccione una opcion: ", 0);
-
-        switch (subopcion) {
-            case 1:
-                // TODO [4.1.6 - Diana]
-                listarPuntos(puntos);
-                break;
-            case 2:
-                // TODO [4.1.6 - Diana]
-                consultarConexionesDePunto(conexiones);
-                break;
-            case 3:
-                // TODO [4.1.6 - Diana]
-                consultarSolicitudesPorEstado(pedidos);
-                break;
-            case 4:
-                // TODO [4.1.6 - Diana]
-                consultarSolicitudesPorCamion(pedidos);
-                break;
-            case 0:
-                break;
-            default:
-                std::cout << "Opcion invalida.\n";
-                break;
-        }
-    } while (subopcion != 0);
-}
-
-// ============================================================================
-// [4.1.7] Reporte general del sistema (Juan David Morales Rabelly)
-// ============================================================================
-
-void mostrarReporteGeneral(const std::vector<Punto>& puntos,
-                           const std::vector<Conexion>& conexiones,
-                           const std::vector<Unidad>& unidades,
-                           const std::vector<Pedido>& pedidos) {
-    int habilitadas = 0;
-    int cerradas = 0;
-    for (const Conexion& c : conexiones) {
-        const std::string est = aMinusculas(recortar(c.estado));
-        if (est == "habilitada") {
-            ++habilitadas;
-        } else if (est == "cerrada") {
-            ++cerradas;
-        }
+    if (dias != static_cast<int>(dias)) {
+        cout << "[ERROR] Ingrese un numero entero de dias.\n";
+        return;
     }
 
-    int disponibles = 0;
-    for (const Unidad& u : unidades) {
-        if (aMinusculas(recortar(u.estado)) == "disponible") {
-            ++disponibles;
-        }
+    int actualizados = 0;
+
+    for (Punto& p : puntos) {
+        if (umbralDiasPorTipo(p.tipo_punto) < 0) continue;
+
+        p.dias_sin_recolectar += static_cast<int>(dias);
+        actualizados++;
     }
 
-    int pendientes = 0;
-    int asignados = 0;
-    int entregados = 0;
-    std::vector<std::pair<std::string, int>> conteoPorUnidad;
+    guardarTodo(
+        puntos, conexiones, unidades, pedidos,
+        combustibles, mantenimientos, historial
+    );
 
-    for (const Pedido& ped : pedidos) {
-        const std::string est = aMinusculas(recortar(ped.estado));
-        if (est == "pendiente") {
-            ++pendientes;
-        } else if (est == "asignado") {
-            ++asignados;
-        } else if (est == "entregado") {
-            ++entregados;
+    cout << "[OK] Se sumaron " << static_cast<int>(dias)
+         << " dia(s) a " << actualizados << " puntos de recojo.\n";
+}
+
+// Evalua el riesgo, prioriza los pedidos y sugiere (o asigna) camiones.
+void evaluarRiesgoSanitario(
+    vector<Punto>& puntos,
+    vector<Pedido>& pedidos,
+    const vector<Conexion>& conexiones,
+    vector<Unidad>& unidades,
+    const vector<Combustible>& combustibles,
+    const vector<Mantenimiento>& mantenimientos,
+    const vector<HistorialMantenimiento>& historial
+) {
+    cout << "\n--- EVALUACION DE RIESGO SANITARIO ---\n";
+
+    vector<RiesgoPunto> riesgos = calcularRiesgos(puntos);
+
+    if (riesgos.empty()) {
+        cout << "[AVISO] No hay puntos de recojo para evaluar.\n";
+        return;
+    }
+
+    // 1. Ranking de puntos, del mas critico al menos critico.
+    cout << "\nPuntos ordenados por riesgo:\n";
+
+    for (const RiesgoPunto& r : riesgos) {
+        string nivel = r.nivel;
+        transform(nivel.begin(), nivel.end(), nivel.begin(),
+            [](unsigned char c) { return static_cast<char>(toupper(c)); });
+
+        cout << "  " << r.codigo << " - " << r.nombre
+             << " (" << r.tipo << ")"
+             << " | dias sin recojo: " << r.dias
+             << " (maximo " << r.umbral << ")"
+             << " | Riesgo " << nivel << "\n";
+    }
+
+    auto buscarRiesgo = [&](const string& codigo) -> const RiesgoPunto* {
+        for (const RiesgoPunto& r : riesgos) {
+            if (r.codigo == codigo) return &r;
+        }
+        return nullptr;
+    };
+
+    int cambios = 0;
+
+    // 2. Subir la prioridad de los pedidos pendientes (nunca se baja).
+    cout << "\nPrioridad de pedidos pendientes:\n";
+
+    bool huboPendientes = false;
+
+    for (Pedido& p : pedidos) {
+        if (p.estado != "pendiente") continue;
+
+        const RiesgoPunto* r = buscarRiesgo(p.origen);
+        if (r == nullptr) continue;
+
+        huboPendientes = true;
+
+        string nueva = p.prioridad;
+
+        if (r->nivel == "alto") {
+            nueva = "alta";
+        }
+        else if (r->nivel == "medio" && p.prioridad == "baja") {
+            nueva = "media";
         }
 
-        const std::string codUnidad = recortar(ped.unidad_asignada);
-        if (!codUnidad.empty()) {
-            bool encontrada = false;
-            for (auto& par : conteoPorUnidad) {
-                if (par.first == codUnidad) {
-                    ++par.second;
-                    encontrada = true;
-                    break;
+        cout << "  " << p.codigo << " (origen " << p.origen
+             << ", riesgo " << r->nivel << "): prioridad " << p.prioridad;
+
+        if (nueva != p.prioridad) {
+            cout << " -> " << nueva << " [ACTUALIZADA]";
+            p.prioridad = nueva;
+            cambios++;
+        }
+
+        cout << "\n";
+    }
+
+    if (!huboPendientes) {
+        cout << "  No hay pedidos pendientes en puntos de recojo.\n";
+    }
+
+    // 3. Sugerir camiones para los puntos de riesgo alto.
+    struct Sugerencia {
+        string pedido;
+        string unidad;
+    };
+
+    vector<Sugerencia> sugerencias;
+    set<string> reservadas;
+
+    cout << "\nAtencion inmediata (riesgo ALTO):\n";
+
+    bool huboAltos = false;
+
+    for (const RiesgoPunto& r : riesgos) {
+        if (r.nivel != "alto") continue;
+
+        for (const Pedido& p : pedidos) {
+            if (p.estado != "pendiente" || p.origen != r.codigo) continue;
+
+            huboAltos = true;
+
+            const Unidad* mejor = nullptr;
+
+            for (const Unidad& u : unidades) {
+                if (u.estado != "disponible") continue;
+                if (reservadas.count(u.codigo) > 0) continue;
+                if (u.capacidad_kg < p.carga_kg) continue;
+                if (normalizarEspecialidad(u.especialidad) !=
+                    normalizarEspecialidad(p.tipo_residuo)) continue;
+
+                if (mejor == nullptr || u.costo_km < mejor->costo_km) {
+                    mejor = &u;
                 }
             }
-            if (!encontrada) {
-                conteoPorUnidad.push_back({codUnidad, 1});
+
+            cout << "  " << r.codigo << " (" << r.dias << " dias sin recojo), "
+                 << "pedido " << p.codigo << " (" << p.tipo_residuo
+                 << ", " << p.carga_kg << " kg): ";
+
+            if (mejor != nullptr) {
+                cout << "asignar camion " << mejor->codigo << " de inmediato.\n";
+                reservadas.insert(mejor->codigo);
+                sugerencias.push_back({p.codigo, mejor->codigo});
+            }
+            else {
+                cout << "sin camion compatible disponible.\n";
             }
         }
     }
 
-    std::string unidadTop;
-    int maxPedidos = 0;
-    for (const auto& par : conteoPorUnidad) {
-        if (par.second > maxPedidos) {
-            maxPedidos = par.second;
-            unidadTop = par.first;
+    if (!huboAltos) {
+        cout << "  No hay pedidos pendientes en puntos de riesgo alto.\n";
+    }
+
+    // 4. Asignacion automatica (con confirmacion).
+    if (!sugerencias.empty()) {
+        string respuesta = leerOpcionRegistro(
+            "\nAsignar automaticamente estos camiones? (si/no): ",
+            {"si", "no"}
+        );
+
+        if (respuesta == "si") {
+            for (const Sugerencia& s : sugerencias) {
+                for (Pedido& p : pedidos) {
+                    if (p.codigo != s.pedido) continue;
+
+                    for (Unidad& u : unidades) {
+                        if (u.codigo != s.unidad) continue;
+
+                        p.estado = "asignado";
+                        p.unidad_asignada = u.codigo;
+                        u.estado = "ocupada";
+                        cambios++;
+
+                        cout << "[OK] " << p.codigo << " asignado a "
+                             << u.codigo << ".\n";
+                    }
+                }
+            }
         }
     }
 
-    std::cout << "\n=== REPORTE GENERAL - RECOLECCION DE RESIDUOS SURCO ===\n";
-    std::cout << "Puntos registrados: " << puntos.size() << "\n";
-    std::cout << "Conexiones habilitadas: " << habilitadas
-              << " | Cerradas: " << cerradas << "\n";
-    std::cout << "Unidades disponibles: " << disponibles
-              << " de " << unidades.size() << "\n";
-    std::cout << "Pedidos pendientes: " << pendientes
-              << " | Asignados: " << asignados
-              << " | Entregados: " << entregados << "\n";
-    if (maxPedidos == 0) {
-        std::cout << "Unidad con mas pedidos: Ninguna (0 pedidos)\n";
-    } else {
-        std::cout << "Unidad con mas pedidos: " << unidadTop
-                  << " (" << maxPedidos << " pedidos)\n";
+    if (cambios > 0) {
+        guardarTodo(
+            puntos, conexiones, unidades, pedidos,
+            combustibles, mantenimientos, historial
+        );
+    }
+
+    cout << "\nEvaluacion terminada. Cambios realizados: " << cambios << "\n";
+}
+
+
+// ---------------------------------------------------------------------------
+// REGISTRO Y CONTROL DE COMBUSTIBLE - Autor: Carlos
+// ---------------------------------------------------------------------------
+
+// Registra los datos iniciales de combustible de una unidad.
+void registrarCombustible(
+    const vector<Punto>& puntos,
+    const vector<Conexion>& conexiones,
+    const vector<Unidad>& unidades,
+    const vector<Pedido>& pedidos,
+    vector<Combustible>& combustibles,
+    const vector<Mantenimiento>& mantenimientos,
+    const vector<HistorialMantenimiento>& historial
+) {
+    cout << "\n--- REGISTRAR CONTROL DE COMBUSTIBLE ---\n";
+
+    string codigo = leerTextoRegistro("Codigo de unidad: ");
+
+    if (!existeUnidad(unidades, codigo)) {
+        cout << "[ERROR] La unidad no existe.\n";
+        return;
+    }
+
+    auto existente = find_if(
+        combustibles.begin(), combustibles.end(),
+        [&](const Combustible& c) {
+            return c.unidad == codigo;
+        }
+    );
+
+    if (existente != combustibles.end()) {
+        cout << "[ERROR] La unidad ya tiene un registro de combustible.\n";
+        return;
+    }
+
+    Combustible c;
+    c.unidad = codigo;
+    c.capacidad_tanque_l = leerNumeroPositivo("Capacidad del tanque (L): ");
+
+    string entrada;
+    double actual;
+
+    while (true) {
+        cout << "Combustible actual (L): ";
+        leerLineaOSalir(entrada);
+
+        if (parsearDouble(entrada, actual) &&
+            actual >= 0 &&
+            actual <= c.capacidad_tanque_l) {
+            break;
+        }
+
+        cout << "[ERROR] Ingrese un valor entre 0 y la capacidad del tanque.\n";
+    }
+
+    c.combustible_actual_l = actual;
+    c.consumo_l_km = leerNumeroPositivo("Consumo por kilometro (L/km): ");
+
+    combustibles.push_back(c);
+
+    guardarTodo(
+        puntos, conexiones, unidades, pedidos,
+        combustibles, mantenimientos, historial
+    );
+
+    cout << "[OK] Control de combustible registrado.\n";
+}
+
+
+// Registra el abastecimiento de combustible.
+void abastecerCombustible(
+    const vector<Punto>& puntos,
+    const vector<Conexion>& conexiones,
+    const vector<Unidad>& unidades,
+    const vector<Pedido>& pedidos,
+    vector<Combustible>& combustibles,
+    const vector<Mantenimiento>& mantenimientos,
+    const vector<HistorialMantenimiento>& historial
+) {
+    cout << "\n--- ABASTECER COMBUSTIBLE ---\n";
+
+    string codigo = leerTextoRegistro("Codigo de unidad: ");
+
+    auto c = find_if(
+        combustibles.begin(), combustibles.end(),
+        [&](const Combustible& combustible) {
+            return combustible.unidad == codigo;
+        }
+    );
+
+    if (c == combustibles.end()) {
+        cout << "[ERROR] La unidad no tiene control de combustible.\n";
+        return;
+    }
+
+    double litros = leerNumeroPositivo("Litros a abastecer: ");
+
+    if (c->combustible_actual_l + litros > c->capacidad_tanque_l) {
+        cout << "[ERROR] El abastecimiento supera la capacidad del tanque.\n";
+        return;
+    }
+
+    c->combustible_actual_l += litros;
+
+    guardarTodo(
+        puntos, conexiones, unidades, pedidos,
+        combustibles, mantenimientos, historial
+    );
+
+    cout << "[OK] Abastecimiento registrado.\n";
+    cout << "Combustible actual: " << c->combustible_actual_l << " L\n";
+}
+
+
+// Descuenta el combustible consumido según la distancia recorrida.
+void registrarConsumoCombustible(
+    const vector<Punto>& puntos,
+    const vector<Conexion>& conexiones,
+    const vector<Unidad>& unidades,
+    const vector<Pedido>& pedidos,
+    vector<Combustible>& combustibles,
+    const vector<Mantenimiento>& mantenimientos,
+    const vector<HistorialMantenimiento>& historial
+) {
+    cout << "\n--- REGISTRAR CONSUMO DE COMBUSTIBLE ---\n";
+
+    string codigo = leerTextoRegistro("Codigo de unidad: ");
+
+    auto c = find_if(
+        combustibles.begin(), combustibles.end(),
+        [&](const Combustible& combustible) {
+            return combustible.unidad == codigo;
+        }
+    );
+
+    if (c == combustibles.end()) {
+        cout << "[ERROR] No existe control de combustible para esa unidad.\n";
+        return;
+    }
+
+    double distancia = leerNumeroPositivo("Distancia recorrida (km): ");
+    double consumo = distancia * c->consumo_l_km;
+
+    if (consumo > c->combustible_actual_l) {
+        cout << "[ERROR] Combustible insuficiente para ese recorrido.\n";
+        cout << "Consumo requerido: " << consumo << " L\n";
+        return;
+    }
+
+    c->combustible_actual_l -= consumo;
+
+    guardarTodo(
+        puntos, conexiones, unidades, pedidos,
+        combustibles, mantenimientos, historial
+    );
+
+    cout << "[OK] Consumo registrado.\n";
+    cout << "Combustible consumido: " << consumo << " L\n";
+    cout << "Combustible restante: " << c->combustible_actual_l << " L\n";
+}
+
+
+// Calcula la distancia que puede recorrer una unidad con su combustible actual.
+void consultarAutonomia(const vector<Combustible>& combustibles) {
+    cout << "\n--- CONSULTAR AUTONOMIA ---\n";
+
+    string codigo = leerTextoRegistro("Codigo de unidad: ");
+
+    auto c = find_if(
+        combustibles.begin(), combustibles.end(),
+        [&](const Combustible& combustible) {
+            return combustible.unidad == codigo;
+        }
+    );
+
+    if (c == combustibles.end()) {
+        cout << "[ERROR] No existe control de combustible para esa unidad.\n";
+        return;
+    }
+
+    if (c->consumo_l_km <= 0) {
+        cout << "[ERROR] El consumo por kilometro debe ser mayor que cero.\n";
+        return;
+    }
+
+    double autonomia =
+        c->combustible_actual_l / c->consumo_l_km;
+
+    cout << "Unidad: " << c->unidad << "\n";
+    cout << "Combustible disponible: "
+         << c->combustible_actual_l << " L\n";
+    cout << "Autonomia estimada: " << autonomia << " km\n";
+}
+
+
+// ---------------------------------------------------------------------------
+// MANTENIMIENTO PREVENTIVO E HISTORIAL - Autor: Jason
+// ---------------------------------------------------------------------------
+
+// Registra el control inicial de mantenimiento de una unidad.
+void registrarControlMantenimiento(
+    const vector<Punto>& puntos,
+    const vector<Conexion>& conexiones,
+    const vector<Unidad>& unidades,
+    const vector<Pedido>& pedidos,
+    const vector<Combustible>& combustibles,
+    vector<Mantenimiento>& mantenimientos,
+    const vector<HistorialMantenimiento>& historial
+) {
+    cout << "\n--- REGISTRAR CONTROL DE MANTENIMIENTO ---\n";
+
+    string codigo = leerTextoRegistro("Codigo de unidad: ");
+
+    if (!existeUnidad(unidades, codigo)) {
+        cout << "[ERROR] La unidad no existe.\n";
+        return;
+    }
+
+    auto existente = find_if(
+        mantenimientos.begin(), mantenimientos.end(),
+        [&](const Mantenimiento& m) {
+            return m.unidad == codigo;
+        }
+    );
+
+    if (existente != mantenimientos.end()) {
+        cout << "[ERROR] La unidad ya tiene un control de mantenimiento.\n";
+        return;
+    }
+
+    Mantenimiento m;
+    m.unidad = codigo;
+    m.km_actual = leerNumeroNoNegativo("Kilometraje actual: ");
+
+    while (true) {
+        m.km_ultimo_mantenimiento = leerNumeroNoNegativo(
+            "Kilometraje del ultimo mantenimiento: "
+        );
+
+        if (m.km_ultimo_mantenimiento <= m.km_actual) break;
+
+        cout << "[ERROR] El ultimo mantenimiento no puede superar "
+                "el kilometraje actual.\n";
+    }
+
+    m.intervalo_km = leerNumeroPositivo("Intervalo de mantenimiento (km): ");
+
+    mantenimientos.push_back(m);
+
+    guardarTodo(
+        puntos, conexiones, unidades, pedidos,
+        combustibles, mantenimientos, historial
+    );
+
+    cout << "[OK] Control inicial de mantenimiento registrado.\n";
+}
+
+
+// Consulta si una unidad necesita mantenimiento preventivo.
+void consultarMantenimientoPreventivo(
+    const vector<Unidad>& unidades,
+    vector<Mantenimiento>& mantenimientos
+) {
+    cout << "\n--- MANTENIMIENTO PREVENTIVO ---\n";
+
+    string codigo = leerTextoRegistro("Codigo de unidad: ");
+
+    if (!existeUnidad(unidades, codigo)) {
+        cout << "[ERROR] La unidad no existe.\n";
+        return;
+    }
+
+    auto m = find_if(
+        mantenimientos.begin(), mantenimientos.end(),
+        [&](const Mantenimiento& mantenimiento) {
+            return mantenimiento.unidad == codigo;
+        }
+    );
+
+    if (m == mantenimientos.end()) {
+        cout << "[AVISO] La unidad no tiene control de mantenimiento.\n";
+        return;
+    }
+
+    double kmRecorridos =
+        m->km_actual - m->km_ultimo_mantenimiento;
+
+    double restantes = m->intervalo_km - kmRecorridos;
+
+    cout << "Kilometraje actual: " << m->km_actual << " km\n";
+    cout << "Ultimo mantenimiento: "
+         << m->km_ultimo_mantenimiento << " km\n";
+    cout << "Intervalo: " << m->intervalo_km << " km\n";
+
+    if (restantes <= 0) {
+        cout << "[ALERTA] Mantenimiento pendiente.\n";
+    }
+    else {
+        cout << "Kilometros restantes para mantenimiento: "
+             << restantes << " km\n";
     }
 }
 
+
+// Registra un servicio y actualiza el control preventivo.
+void registrarServicioMantenimiento(
+    const vector<Punto>& puntos,
+    const vector<Conexion>& conexiones,
+    const vector<Unidad>& unidades,
+    const vector<Pedido>& pedidos,
+    const vector<Combustible>& combustibles,
+    vector<Mantenimiento>& mantenimientos,
+    vector<HistorialMantenimiento>& historial
+) {
+    cout << "\n--- REGISTRAR SERVICIO DE MANTENIMIENTO ---\n";
+
+    string codigo = leerTextoRegistro("Codigo de unidad: ");
+
+    if (!existeUnidad(unidades, codigo)) {
+        cout << "[ERROR] La unidad no existe.\n";
+        return;
+    }
+
+    auto m = find_if(
+        mantenimientos.begin(), mantenimientos.end(),
+        [&](const Mantenimiento& mantenimiento) {
+            return mantenimiento.unidad == codigo;
+        }
+    );
+
+    if (m == mantenimientos.end()) {
+        cout << "[ERROR] La unidad no tiene control de mantenimiento.\n";
+        return;
+    }
+
+    double kilometraje = leerNumeroPositivo("Kilometraje del servicio: ");
+
+    if (kilometraje < m->km_actual) {
+        cout << "[ERROR] El kilometraje no puede ser menor al registrado.\n";
+        return;
+    }
+
+    HistorialMantenimiento h;
+
+    h.codigo_servicio = leerTextoRegistro("Codigo de servicio: ");
+
+    bool servicioRepetido = any_of(
+        historial.begin(), historial.end(),
+        [&](const HistorialMantenimiento& x) {
+            return x.codigo_servicio == h.codigo_servicio;
+        }
+    );
+
+    if (servicioRepetido) {
+        cout << "[ERROR] Ya existe un servicio con ese codigo.\n";
+        return;
+    }
+
+    h.unidad = codigo;
+    h.fecha = leerTextoRegistro("Fecha del servicio: ");
+    h.kilometraje = kilometraje;
+    h.descripcion = leerTextoRegistro("Descripcion del servicio: ");
+
+    m->km_actual = kilometraje;
+    m->km_ultimo_mantenimiento = kilometraje;
+
+    historial.push_back(h);
+
+    guardarTodo(
+        puntos, conexiones, unidades, pedidos,
+        combustibles, mantenimientos, historial
+    );
+
+    cout << "[OK] Servicio registrado y mantenimiento actualizado.\n";
+}
+
+// ---------------------------------------------------------------------------
+// ACTUALIZACION DE KILOMETRAJE - Autor: Jason
+// ---------------------------------------------------------------------------
+
+// Actualiza el kilometraje actual de una unidad con control de mantenimiento.
+void actualizarKilometraje(
+    const vector<Punto>& puntos,
+    const vector<Conexion>& conexiones,
+    const vector<Unidad>& unidades,
+    const vector<Pedido>& pedidos,
+    const vector<Combustible>& combustibles,
+    vector<Mantenimiento>& mantenimientos,
+    const vector<HistorialMantenimiento>& historial
+) {
+    cout << "\n--- ACTUALIZAR KILOMETRAJE ---\n";
+
+    string codigo = leerTextoRegistro("Codigo de unidad: ");
+
+    auto m = find_if(
+        mantenimientos.begin(), mantenimientos.end(),
+        [&](const Mantenimiento& mantenimiento) {
+            return mantenimiento.unidad == codigo;
+        }
+    );
+
+    if (m == mantenimientos.end()) {
+        cout << "[ERROR] La unidad no tiene control de mantenimiento.\n";
+        return;
+    }
+
+    double nuevoKm = leerNumeroPositivo("Nuevo kilometraje actual: ");
+
+    if (nuevoKm < m->km_actual) {
+        cout << "[ERROR] El kilometraje no puede ser menor al registrado ("
+             << m->km_actual << " km).\n";
+        return;
+    }
+
+    m->km_actual = nuevoKm;
+
+    guardarTodo(
+        puntos, conexiones, unidades, pedidos,
+        combustibles, mantenimientos, historial
+    );
+
+    cout << "[OK] Kilometraje actualizado.\n";
+}
+
+
+// ---------------------------------------------------------------------------
+// ACTUALIZACION DE DIAS SIN RECOLECTAR - Autor: Diana
+// ---------------------------------------------------------------------------
+
+// Registra cuantos dias lleva un punto sin recojo de residuos.
+void actualizarDiasSinRecolectar(
+    vector<Punto>& puntos,
+    const vector<Conexion>& conexiones,
+    const vector<Unidad>& unidades,
+    const vector<Pedido>& pedidos,
+    const vector<Combustible>& combustibles,
+    const vector<Mantenimiento>& mantenimientos,
+    const vector<HistorialMantenimiento>& historial
+) {
+    cout << "\n--- ACTUALIZAR DIAS SIN RECOLECTAR ---\n";
+
+    string codigo = leerTextoRegistro("Codigo del punto: ");
+
+    auto punto = find_if(
+        puntos.begin(), puntos.end(),
+        [&](const Punto& p) {
+            return p.codigo == codigo;
+        }
+    );
+
+    if (punto == puntos.end()) {
+        cout << "[ERROR] El punto no existe.\n";
+        return;
+    }
+
+    double dias = leerNumeroNoNegativo("Dias sin recolectar: ");
+
+    if (dias != static_cast<int>(dias)) {
+        cout << "[ERROR] Ingrese un numero entero de dias.\n";
+        return;
+    }
+
+    punto->dias_sin_recolectar = static_cast<int>(dias);
+
+    guardarTodo(
+        puntos, conexiones, unidades, pedidos,
+        combustibles, mantenimientos, historial
+    );
+
+    cout << "[OK] Dias sin recolectar actualizados.\n";
+}
+
+
 // ============================================================================
-// [4.1.1] Menu principal
+// 8. Reporte general
 // ============================================================================
+
+// ---------------------------------------------------------------------------
+// [4.1.7] REPORTE GENERAL - Autor: Juan
+// ---------------------------------------------------------------------------
+
+// Muestra un resumen del estado del sistema.
+void reporteGeneral(
+    const vector<Punto>& puntos,
+    const vector<Conexion>& conexiones,
+    const vector<Unidad>& unidades,
+    const vector<Pedido>& pedidos
+) {
+    int habilitadas = 0, cerradas = 0;
+    int disponibles = 0;
+    int pendientes = 0, asignados = 0, entregados = 0;
+
+    for (const Conexion& c : conexiones) {
+        if (c.estado == "habilitada") habilitadas++;
+        else if (c.estado == "cerrada") cerradas++;
+    }
+
+    for (const Unidad& u : unidades) {
+        if (u.estado == "disponible") disponibles++;
+    }
+
+    // Cuenta cuantos pedidos (asignados o entregados) tiene cada unidad.
+    map<string, int> pedidosPorUnidad;
+
+    for (const Pedido& p : pedidos) {
+        if (p.estado == "pendiente") pendientes++;
+        else if (p.estado == "asignado") asignados++;
+        else if (p.estado == "entregado") entregados++;
+
+        if (!p.unidad_asignada.empty()) {
+            pedidosPorUnidad[p.unidad_asignada]++;
+        }
+    }
+
+    string mejorUnidad;
+    int mejorCantidad = 0;
+
+    for (const Unidad& u : unidades) {
+        int cantidad = pedidosPorUnidad[u.codigo];
+
+        if (cantidad > mejorCantidad) {
+            mejorCantidad = cantidad;
+            mejorUnidad = u.codigo;
+        }
+    }
+
+    cout << "\n=========== REPORTE GENERAL ===========\n";
+    cout << "Puntos registrados: " << puntos.size() << "\n";
+    cout << "Conexiones habilitadas: " << habilitadas
+         << " | Cerradas: " << cerradas << "\n";
+    cout << "Unidades disponibles: " << disponibles
+         << " de " << unidades.size() << "\n";
+    cout << "Pedidos pendientes: " << pendientes
+         << " | Asignados: " << asignados
+         << " | Entregados: " << entregados << "\n";
+
+    if (mejorCantidad > 0) {
+        cout << "Unidad con mas pedidos: " << mejorUnidad
+             << " (" << mejorCantidad << " pedidos)\n";
+    } else {
+        cout << "Unidad con mas pedidos: ninguna\n";
+    }
+
+    cout << "=======================================\n";
+}
+
+
+// ============================================================================
+// 9. Menus y programa principal
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// [4.1.1] MENU PRINCIPAL - Autor: Juan
+// ---------------------------------------------------------------------------
+
+void menuRegistro(
+    vector<Punto>& puntos,
+    vector<Conexion>& conexiones,
+    vector<Unidad>& unidades,
+    vector<Pedido>& pedidos,
+    vector<Combustible>& combustibles,
+    vector<Mantenimiento>& mantenimientos,
+    vector<HistorialMantenimiento>& historial
+) {
+    string opcion;
+
+    do {
+        cout << "\n====================================\n";
+        cout << "       REGISTRO DE INFORMACION\n";
+        cout << "====================================\n";
+        cout << "1. Registrar punto\n";
+        cout << "2. Registrar conexion\n";
+        cout << "3. Registrar unidad\n";
+        cout << "4. Registrar pedido\n";
+        cout << "0. Volver al menu principal\n";
+        cout << "====================================\n";
+
+        opcion = leerOpcionRegistro(
+            "Seleccione una opcion: ", {"0", "1", "2", "3", "4"}
+        );
+
+        if (opcion == "1") {
+            registrarPunto(puntos, conexiones, unidades, pedidos,
+                           combustibles, mantenimientos, historial);
+        }
+        else if (opcion == "2") {
+            registrarConexion(puntos, conexiones, unidades, pedidos,
+                              combustibles, mantenimientos, historial);
+        }
+        else if (opcion == "3") {
+            registrarUnidad(puntos, conexiones, unidades, pedidos,
+                            combustibles, mantenimientos, historial);
+        }
+        else if (opcion == "4") {
+            registrarPedido(puntos, conexiones, unidades, pedidos,
+                            combustibles, mantenimientos, historial);
+        }
+    } while (opcion != "0");
+}
+
+
+void menuGestionEstados(
+    vector<Punto>& puntos,
+    vector<Conexion>& conexiones,
+    vector<Unidad>& unidades,
+    vector<Pedido>& pedidos,
+    vector<Combustible>& combustibles,
+    vector<Mantenimiento>& mantenimientos,
+    vector<HistorialMantenimiento>& historial
+) {
+    string opcion;
+
+    do {
+        cout << "\n====================================\n";
+        cout << "         GESTION DE ESTADOS\n";
+        cout << "====================================\n";
+        cout << "1. Cerrar o habilitar una conexion\n";
+        cout << "2. Asignar pedido a una unidad\n";
+        cout << "3. Marcar pedido como entregado\n";
+        cout << "0. Volver al menu principal\n";
+        cout << "====================================\n";
+
+        opcion = leerOpcionRegistro(
+            "Seleccione una opcion: ", {"0", "1", "2", "3"}
+        );
+
+        if (opcion == "1") {
+            gestionarConexion(puntos, conexiones, unidades, pedidos,
+                              combustibles, mantenimientos, historial);
+        }
+        else if (opcion == "2") {
+            asignarPedido(puntos, conexiones, unidades, pedidos,
+                          combustibles, mantenimientos, historial);
+        }
+        else if (opcion == "3") {
+            marcarPedidoEntregado(puntos, conexiones, unidades, pedidos,
+                                  combustibles, mantenimientos, historial);
+        }
+    } while (opcion != "0");
+}
+
+
+void menuFuncionalidadesAdicionales(
+    vector<Punto>& puntos,
+    vector<Conexion>& conexiones,
+    vector<Unidad>& unidades,
+    vector<Pedido>& pedidos,
+    vector<Combustible>& combustibles,
+    vector<Mantenimiento>& mantenimientos,
+    vector<HistorialMantenimiento>& historial
+) {
+    string opcion;
+
+    do {
+        cout << "\n==========================================\n";
+        cout << "        FUNCIONALIDADES ADICIONALES\n";
+        cout << "==========================================\n";
+        cout << " -- Riesgo sanitario (Diana) --\n";
+        cout << " 1. Actualizar dias sin recolectar de un punto\n";
+        cout << " 2. Avanzar dias sin recolectar (simulacion)\n";
+        cout << " 3. Evaluar riesgo sanitario y priorizar\n";
+        cout << " -- Combustible y autonomia (Carlos) --\n";
+        cout << " 4. Registrar control de combustible\n";
+        cout << " 5. Abastecer combustible\n";
+        cout << " 6. Registrar consumo por recorrido\n";
+        cout << " 7. Consultar autonomia\n";
+        cout << " -- Mantenimiento preventivo (Jason) --\n";
+        cout << " 8. Registrar control de mantenimiento\n";
+        cout << " 9. Actualizar kilometraje\n";
+        cout << "10. Consultar mantenimiento de una unidad\n";
+        cout << "11. Registrar servicio de mantenimiento\n";
+        cout << " 0. Volver al menu principal\n";
+        cout << "==========================================\n";
+
+        opcion = leerOpcionRegistro(
+            "Seleccione una opcion: ",
+            {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"}
+        );
+
+        if (opcion == "1") {
+            actualizarDiasSinRecolectar(puntos, conexiones, unidades, pedidos,
+                                        combustibles, mantenimientos, historial);
+        }
+        else if (opcion == "2") {
+            avanzarDiasSinRecolectar(puntos, conexiones, unidades, pedidos,
+                                     combustibles, mantenimientos, historial);
+        }
+        else if (opcion == "3") {
+            evaluarRiesgoSanitario(puntos, pedidos, conexiones, unidades,
+                                   combustibles, mantenimientos, historial);
+        }
+        else if (opcion == "4") {
+            registrarCombustible(puntos, conexiones, unidades, pedidos,
+                                 combustibles, mantenimientos, historial);
+        }
+        else if (opcion == "5") {
+            abastecerCombustible(puntos, conexiones, unidades, pedidos,
+                                 combustibles, mantenimientos, historial);
+        }
+        else if (opcion == "6") {
+            registrarConsumoCombustible(puntos, conexiones, unidades, pedidos,
+                                        combustibles, mantenimientos, historial);
+        }
+        else if (opcion == "7") {
+            consultarAutonomia(combustibles);
+        }
+        else if (opcion == "8") {
+            registrarControlMantenimiento(puntos, conexiones, unidades, pedidos,
+                                          combustibles, mantenimientos, historial);
+        }
+        else if (opcion == "9") {
+            actualizarKilometraje(puntos, conexiones, unidades, pedidos,
+                                  combustibles, mantenimientos, historial);
+        }
+        else if (opcion == "10") {
+            consultarMantenimientoPreventivo(unidades, mantenimientos);
+        }
+        else if (opcion == "11") {
+            registrarServicioMantenimiento(puntos, conexiones, unidades, pedidos,
+                                           combustibles, mantenimientos, historial);
+        }
+    } while (opcion != "0");
+}
+
 
 int main() {
-    std::vector<Punto> puntos;
-    std::vector<Conexion> conexiones;
-    std::vector<Unidad> unidades;
-    std::vector<Pedido> pedidos;
+    vector<Punto> puntos;
+    vector<Conexion> conexiones;
+    vector<Unidad> unidades;
+    vector<Pedido> pedidos;
+    vector<Combustible> combustibles;
+    vector<Mantenimiento> mantenimientos;
+    vector<HistorialMantenimiento> historial;
+    EsquemaCSV esquema;
 
-    cargaInicial(puntos, conexiones, unidades, pedidos);
+    // [4.1.2] Carga inicial: lee los CSV existentes al iniciar.
+    cargarTodo(puntos, conexiones, unidades, pedidos,
+               combustibles, mantenimientos, historial, esquema);
 
-    int opcion = -1;
+    string opcion;
+
     do {
-        std::cout << "\n============================================================\n";
-        std::cout << "  RECOLECCION DE RESIDUOS SOLIDOS - SANTIAGO DE SURCO\n";
-        std::cout << "============================================================\n";
-        std::cout << "1. Registrar datos (Puntos, Vias, Camiones, Solicitudes)\n";
-        std::cout << "2. Gestionar estados (Vias y Solicitudes)\n";
-        std::cout << "3. Consultas basicas\n";
-        std::cout << "4. Reporte general del sistema\n";
-        std::cout << "5. Clasificacion por residuo y asignacion especializada\n";
-        std::cout << "6. Salir\n";
+        cout << "\n==========================================\n";
+        cout << "  PLANIFICADOR DE RUTAS - RESIDUOS SURCO\n";
+        cout << "==========================================\n";
+        cout << "1. Registrar informacion\n";
+        cout << "2. Gestion de estados\n";
+        cout << "3. Consultas basicas\n";
+        cout << "4. Reporte general\n";
+        cout << "5. Funcionalidades adicionales\n";
+        cout << "0. Salir\n";
+        cout << "==========================================\n";
 
-        opcion = leerOpcionEntera("Seleccione una opcion: ", 6);
+        opcion = leerOpcionRegistro(
+            "Seleccione una opcion: ", {"0", "1", "2", "3", "4", "5"}
+        );
 
-        switch (opcion) {
-            case 1:
-                menuRegistrarDatos(puntos, conexiones, unidades, pedidos);
-                guardarTodo(puntos, conexiones, unidades, pedidos);
-                break;
-            case 2:
-                menuGestionarEstados(conexiones, unidades, pedidos);
-                guardarTodo(puntos, conexiones, unidades, pedidos);
-                break;
-            case 3:
-                menuConsultasBasicas(puntos, conexiones, pedidos);
-                break;
-            case 4:
-                mostrarReporteGeneral(puntos, conexiones, unidades, pedidos);
-                break;
-            case 5:
-                menuClasificacionEspecializada(unidades, pedidos);
-                guardarTodo(puntos, conexiones, unidades, pedidos);
-                break;
-            case 6:
-                std::cout << "Saliendo del sistema...\n";
-                break;
-            default:
-                std::cout << "Opcion invalida. Intente nuevamente.\n";
-                break;
+        if (opcion == "1") {
+            menuRegistro(puntos, conexiones, unidades, pedidos,
+                         combustibles, mantenimientos, historial);
         }
-    } while (opcion != 6);
+        else if (opcion == "2") {
+            menuGestionEstados(puntos, conexiones, unidades, pedidos,
+                               combustibles, mantenimientos, historial);
+        }
+        else if (opcion == "3") {
+            menuConsultas(puntos, conexiones, unidades, pedidos);
+        }
+        else if (opcion == "4") {
+            reporteGeneral(puntos, conexiones, unidades, pedidos);
+        }
+        else if (opcion == "5") {
+            menuFuncionalidadesAdicionales(
+                puntos, conexiones, unidades, pedidos,
+                combustibles, mantenimientos, historial
+            );
+        }
+    } while (opcion != "0");
 
+    cout << "\nHasta pronto.\n";
     return 0;
 }
